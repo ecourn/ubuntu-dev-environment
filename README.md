@@ -1,17 +1,27 @@
-# Ubuntu : environnement de développement et serveur
+# Ubuntu : serveur et environnement de développement
 
-Les dossiers sont numérotés dans l’ordre recommandé. Le parcours serveur est facultatif et indépendant du premier :
+Les dossiers suivent l’ordre d’exécution recommandé : configurez d’abord le serveur, puis installez l’environnement de développement.
 
-1. `01-environnement-de-developpement/` installe un environnement de développement Ubuntu : Node.js LTS, npm, pnpm, Bun, uv, zoxide, fzf, GitHub CLI et Docker.
-2. `02-configuration-serveur/` contient un guide distinct pour préparer un serveur : locale, fuseau horaire, clé SSH et durcissement SSH/UFW/Fail2Ban. Il ne dépend pas du premier parcours.
+## 1. Configuration du serveur
 
-## Environnement de développement
-
-Prérequis : Ubuntu officiellement pris en charge, architecture `amd64` ou `arm64`, Python 3.10+, `apt`, `dpkg`, `systemd`, `sudo`, accès réseau et compte utilisateur avec Bash, Zsh ou Fish. Aucune dépendance Python externe n’est requise.
+Clonez le dépôt, puis ouvrez le dossier du guide :
 
 ```bash
 git clone https://github.com/ecourn/ubuntu-dev-environment.git
-cd ubuntu-dev-environment/01-environnement-de-developpement
+cd ubuntu-dev-environment
+cd 01-configuration-serveur
+```
+
+Consultez `tuto-script-serveur-complet-3-en-1.md` et suivez ses étapes dans l’ordre. Le guide modifie notamment SSH et le pare-feu : gardez un accès console ou de secours, puis vérifiez qu’une nouvelle connexion SSH fonctionne avant de continuer. Ne versionnez jamais vos clés privées.
+
+## 2. Environnement de développement
+
+Prérequis : Ubuntu officiellement pris en charge, architecture `amd64` ou `arm64`, Python 3.10+, `apt`, `dpkg`, `systemd`, `sudo`, accès réseau et compte utilisateur avec Bash, Zsh ou Fish. Aucune dépendance Python externe n’est requise.
+
+Après avoir confirmé l’accès au serveur, depuis le dossier `01-configuration-serveur` :
+
+```bash
+cd ../02-environnement-de-developpement
 
 # Vérifier les tests
 python3 -m unittest discover -s tests -v
@@ -23,14 +33,4 @@ python3 install_dev_environment.py --dry-run
 python3 install_dev_environment.py
 ```
 
-Lancez l’installateur depuis votre compte utilisateur, pas avec `sudo` ajouté à la commande. Il vérifie la version Ubuntu et l’architecture avant d’agir.
-
-## Configuration du serveur
-
-Depuis la racine du dépôt, placez-vous dans le dossier du guide avant de générer les scripts et clés temporaires :
-
-```bash
-cd 02-configuration-serveur
-```
-
-Consultez ensuite `tuto-script-serveur-complet-3-en-1.md` et suivez ses étapes dans l’ordre. Ce parcours modifie notamment SSH et le pare-feu : vérifiez les paramètres, gardez un accès console ou de secours au serveur et ne versionnez jamais vos clés privées.
+L’installateur installe Node.js LTS, npm, pnpm, Bun, uv, zoxide, fzf, GitHub CLI et Docker. Lancez-le depuis votre compte utilisateur, sans ajouter `sudo` à la commande.
