@@ -1,0 +1,32 @@
+# Python bytecode and local environments
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+
+# Test and build artifacts
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+build/
+dist/
+*.egg-info/
+
+# Local secrets, temporary keys, and scripts generated from the server guide
+.env
+.env.*
+!.env.example
+/02-configuration-serveur/cle
+/02-configuration-serveur/priv
+/02-configuration-serveur/serveur-bootstrap-complet.sh
+/02-configuration-serveur/serveur-bootstrap-complet-corrige.sh
+*.pem
+
+# Editor and operating-system files
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+*~
