@@ -203,6 +203,7 @@ def is_version_compatible(version: str, engine_range: str) -> bool:
     if not isinstance(engine_range, str) or not engine_range.strip():
         raise InstallError("La contrainte engines.node est vide ou invalide.")
 
+    matched = False
     for alternative in engine_range.split("||"):
         clause = alternative.strip()
         if not clause:
@@ -215,16 +216,18 @@ def is_version_compatible(version: str, engine_range: str) -> bool:
             if parsed >= lower and (
                 parsed < upper_exclusive if upper_exclusive is not None else parsed <= upper
             ):
-                return True
+                matched = True
             continue
 
         clause = re.sub(r"([<>=~^])\s+", r"\1", clause)
         tokens = clause.split()
         if not tokens:
             raise InstallError(f"Plage semver Node invalide : {engine_range!r}.")
-        if all(_satisfies_token(parsed, token) for token in tokens):
-            return True
-    return False
+        # Evaluate every clause even when an earlier OR branch matched: unknown
+        # syntax must never silently become a compatible release.
+        results = [_satisfies_token(parsed, token) for token in tokens]
+        matched |= all(results)
+    return matched
 
 
 def select_latest_node_lts(releases: list[dict], distribution: str) -> tuple[str, str]:
@@ -287,14 +290,14 @@ def select_latest_compatible_package(packument: dict, node_version: str) -> str:
     )
 
 
-def extract_archive_member(data: bytes, archive_format: str, basename: str) -> bytes:
+def extract_archive_member(data: bytes | Path, archive_format: str, basename: str) -> bytes:
     """Read one safe regular-file member without extracting archive paths to disk."""
     if archive_format not in {"tar.gz", "zip"} or not re.fullmatch(r"[A-Za-z0-9._+-]+", basename):
         raise InstallError("Format ou nom de binaire d'archive invalide.")
     matches: list[bytes] = []
 
     def validate_name(name: str) -> PurePosixPath:
-        if "\\" in name:
+        if "\\" in name or "\x00" in name or any(part in ("", ".", "..") for part in name.rstrip("/").split("/")):
             raise InstallError("Chemin d'archive non sûr.")
         path = PurePosixPath(name)
         if path.is_absolute() or not path.parts or any(part in {"..", ""} for part in path.parts):
@@ -303,22 +306,23 @@ def extract_archive_member(data: bytes, archive_format: str, basename: str) -> b
 
     try:
         if archive_format == "zip":
-            with zipfile.ZipFile(io.BytesIO(data)) as archive:
-                for info in archive.infolist():
+            with zipfile.ZipFile(data if isinstance(data, Path) else io.BytesIO(data)) as zip_archive:
+                for info in zip_archive.infolist():
                     path = validate_name(info.filename)
                     if info.is_dir():
                         continue
                     mode = info.external_attr >> 16
-                    if stat.S_ISLNK(mode):
-                        raise InstallError("L'archive contient un lien symbolique refusé.")
+                    if stat.S_IFMT(mode) and not stat.S_ISREG(mode):
+                        raise InstallError("L'archive contient un membre non régulier refusé.")
                     if path.name == basename:
                         if info.file_size <= 0 or info.file_size > 250_000_000:
                             raise InstallError(f"Taille invalide pour le binaire {basename}.")
-                        with archive.open(info, "r") as stream:
+                        with zip_archive.open(info, "r") as stream:
                             matches.append(stream.read(250_000_001))
         else:
-            with tarfile.open(fileobj=io.BytesIO(data), mode="r:gz") as archive:
-                for member in archive.getmembers():
+            with tarfile.open(name=str(data) if isinstance(data, Path) else None,
+                              fileobj=None if isinstance(data, Path) else io.BytesIO(data), mode="r:gz") as tar_archive:
+                for member in tar_archive.getmembers():
                     path = validate_name(member.name)
                     if member.isdir():
                         continue
@@ -327,11 +331,11 @@ def extract_archive_member(data: bytes, archive_format: str, basename: str) -> b
                     if path.name == basename:
                         if member.size <= 0 or member.size > 250_000_000:
                             raise InstallError(f"Taille invalide pour le binaire {basename}.")
-                        stream = archive.extractfile(member)
-                        if stream is None:
+                        member_stream = tar_archive.extractfile(member)
+                        if member_stream is None:
                             raise InstallError(f"Binaire {basename} illisible dans l'archive.")
-                        with stream:
-                            matches.append(stream.read(250_000_001))
+                        with member_stream:
+                            matches.append(member_stream.read(250_000_001))
     except (OSError, tarfile.TarError, zipfile.BadZipFile) as exc:
         raise InstallError(f"Archive {archive_format} invalide ou tronquée.") from exc
 
@@ -474,10 +478,14 @@ GITHUB_API = "https://api.github.com/repos"
 NODESOURCE_BASE = "https://deb.nodesource.com"
 DOCKER_BASE = "https://download.docker.com/linux/ubuntu"
 GH_CLI_BASE = "https://cli.github.com/packages"
-GH_CLI_KEY_SHA256 = "6084d5d7bd8e288441e0e94fc6275570895da18e6751f70f057485dc2d1a811b"
-GH_CLI_FINGERPRINTS = {
-    "2C6106201985B60E6C7AC87323F3D4EA75716059",
-    "7F38BBB59D064DBCB3D84D725612B36462313325",
+APT_KEY_TRUST_V1 = {
+    # Primary fingerprints verified from the official key endpoints (not subkeys).
+    "github-cli": frozenset({
+        "2C6106201985B60E6C7AC87323F3D4EA75716059",
+        "7F38BBB59D064DBCB3D84D725612B36462313325",
+    }),
+    "nodesource": frozenset({"6F71F525282841EEDAF851B42F59B5F99B1BE0B4"}),
+    "docker": frozenset({"9DC858229FC7DD38854AE2D88D81803C0EBFCD88"}),
 }
 TRUSTED_HOSTS = {
     "changelogs.ubuntu.com", "nodejs.org", "registry.npmjs.org", "api.github.com",
@@ -520,6 +528,56 @@ def fetch_https_bytes(url: str, *, accept: str = "*/*", max_bytes: int = 20_000_
     raise InstallError(f"Échec réseau répété depuis {parsed.hostname}.")
 
 
+def download_verified_file(url: str, destination: Path, size: int, sha256: str) -> None:
+    """Stream an official asset to a private file; publish only after verification."""
+    parsed = urllib.parse.urlsplit(url)
+    if (parsed.scheme != "https" or parsed.hostname not in TRUSTED_HOSTS
+            or parsed.username or parsed.password or parsed.port not in (None, 443)):
+        raise InstallError("URL d'asset non approuvée.")
+    if not 0 < size <= 250_000_000 or not re.fullmatch(r"[0-9a-fA-F]{64}", sha256):
+        raise InstallError("Taille ou SHA-256 d'asset invalide.")
+    request = urllib.request.Request(url, headers={
+        "User-Agent": "ubuntu-dev-bootstrap/1.0", "Accept": "application/octet-stream",
+    })
+    fd, temporary_name = tempfile.mkstemp(dir=destination.parent, prefix=".verified-asset-")
+    temporary = Path(temporary_name)
+    try:
+        digest = hashlib.sha256()
+        count = 0
+        with os.fdopen(fd, "wb") as stream:
+            with urllib.request.urlopen(request, timeout=60) as response:
+                final = urllib.parse.urlsplit(response.geturl())
+                if final.scheme != "https" or final.hostname not in TRUSTED_HOSTS or getattr(response, "status", 200) != 200:
+                    raise InstallError("Redirection ou statut d'asset non approuvé.")
+                while True:
+                    chunk = response.read(min(1_048_576, size - count + 1))
+                    if not chunk:
+                        break
+                    count += len(chunk)
+                    if count > size:
+                        raise InstallError("Asset plus grand que la taille officielle.")
+                    digest.update(chunk)
+                    stream.write(chunk)
+            stream.flush()
+            os.fsync(stream.fileno())
+        if count != size or digest.hexdigest() != sha256.lower():
+            raise InstallError("Taille ou SHA-256 officiel de l'asset incorrect.")
+        os.replace(temporary, destination)
+        fsync_directory(destination.parent)
+    except (OSError, urllib.error.URLError, TimeoutError) as exc:
+        raise InstallError("Téléchargement de l'asset impossible.") from exc
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def fsync_directory(path: Path) -> None:
+    fd = os.open(path, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
 def fetch_https_json(url: str, *, accept: str = "application/json", max_bytes: int = 20_000_000) -> Any:
     try:
         return json.loads(fetch_https_bytes(url, accept=accept, max_bytes=max_bytes))
@@ -559,7 +617,7 @@ def probe_https_url(url: str) -> None:
 
 
 def extract_display_version(output: str) -> str:
-    match = re.search(r"(?<![0-9])v?(\d+\.\d+\.\d+)(?![0-9])", output)
+    match = re.search(r"(?<![\w.])v?(\d+\.\d+\.\d+)(?![\w.+~-])", output)
     if not match:
         raise InstallError("Impossible de lire la version affichée par l'exécutable.")
     return match.group(1)
@@ -645,8 +703,9 @@ class UbuntuBootstrap:
     MANAGED_END = "# <<< dev-bootstrap managed <<<"
     SYSTEM_PATH = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 
-    def __init__(self, dry_run: bool = False):
+    def __init__(self, dry_run: bool = False, github_auth: bool = False):
         self.dry_run = dry_run
+        self.github_auth_requested = github_auth
         self.target = resolve_target_user(
             os.geteuid(), os.getuid(), os.environ, pwd.getpwnam, pwd.getpwuid
         )
@@ -657,7 +716,7 @@ class UbuntuBootstrap:
         inherited_path = os.environ.get("PATH", self.SYSTEM_PATH)
         if os.geteuid() == 0:
             user_paths = [str(self.home / ".local" / "bin"), str(self.home / ".bun" / "bin")]
-            inherited_path = self.SYSTEM_PATH + ":" + ":".join(user_paths)
+            inherited_path = inherited_path + ":" + ":".join(user_paths)
         self.target_path = ":".join([str(self.bin_dir), inherited_path])
         self.target_env = {
             "HOME": str(self.home),
@@ -674,7 +733,7 @@ class UbuntuBootstrap:
         self.status: dict[str, str] = {}
         self.apt_candidates: dict[str, str] = {}
         self.apt_before: dict[str, str | None] = {}
-        self.manifest: dict[str, Any] = {"schema": 1, "tools": {}}
+        self.manifest: dict[str, Any] = {"schema": 2, "tools": {}}
         self.gh_authenticated = False
         self.auth_tty_available = False
         self.verified_versions: dict[str, str] = {}
@@ -693,6 +752,11 @@ class UbuntuBootstrap:
             raise InstallError(f"Commande système absente du PATH approuvé : {name}.")
         return executable
 
+    def _privileged_env(self) -> dict[str, str]:
+        """Never inherit APT/GPG, loader, proxy, or shell settings across privilege boundaries."""
+        return {"PATH": self.SYSTEM_PATH, "HOME": "/root", "LANG": "C.UTF-8",
+                "DEBIAN_FRONTEND": "noninteractive"}
+
     def _run(
         self,
         command: list[str],
@@ -704,11 +768,7 @@ class UbuntuBootstrap:
         timeout: int | None = None,
         label: str | None = None,
     ) -> subprocess.CompletedProcess:
-        env = os.environ.copy()
-        if as_user:
-            env.update(self.target_env)
-        else:
-            env["PATH"] = self.SYSTEM_PATH
+        env = {**os.environ, **self.target_env} if as_user else self._privileged_env()
         actual = list(command)
         if not as_user:
             actual = [self._system_executable(command[0]), *command[1:]]
@@ -767,14 +827,16 @@ class UbuntuBootstrap:
         if os.geteuid() != 0:
             yield
             return
-        old_euid, old_egid = os.geteuid(), os.getegid()
+        old_euid, old_egid, old_groups = os.geteuid(), os.getegid(), os.getgroups()
         try:
+            os.setgroups([])
             os.setegid(self.target.gid)
             os.seteuid(self.target.uid)
             yield
         finally:
             os.seteuid(old_euid)
             os.setegid(old_egid)
+            os.setgroups(old_groups)
 
     def _read_os_release(self) -> dict[str, str]:
         values: dict[str, str] = {}
@@ -861,12 +923,17 @@ class UbuntuBootstrap:
 
     def _check_node_manager_conflicts(self) -> None:
         manager = re.compile(r"\b(nvm|fnm|volta|asdf|mise)\b|NVM_DIR|\.nvm|\.volta|\.asdf|mise activate|fnm env")
-        if not self.dry_run and os.geteuid() != 0:
-            current = shutil.which("node", path=self.target_path)
-            if current and not current.startswith(("/usr/bin/", "/bin/")):
-                raise InstallError(
-                    f"Node.js actif depuis {current}; installation NodeSource interrompue pour éviter un masquage."
-                )
+        current = shutil.which("node", path=self.target_path)
+        if current and not current.startswith(("/usr/bin/", "/bin/")):
+            raise InstallError(
+                f"Node.js actif depuis {current}; installation NodeSource interrompue pour éviter un masquage."
+            )
+        # sudo may replace PATH with secure_path; inspect common manager shims directly.
+        for relative in (".volta/bin/node", ".asdf/shims/node", ".local/share/mise/shims/node",
+                         ".local/share/fnm/aliases/default/bin/node", ".nvm/current/bin/node"):
+            manager_node = self.home / relative
+            if manager_node.exists() or manager_node.is_symlink():
+                raise InstallError(f"Gestionnaire Node.js détecté hors PATH sudo: {manager_node}.")
         for path in self._target_shell_rcs():
             try:
                 lines = path.read_text(encoding="utf-8").splitlines()
@@ -890,12 +957,8 @@ class UbuntuBootstrap:
             finally:
                 os.close(fd)
             self.auth_tty_available = True
-        except OSError as exc:
+        except OSError:
             self.auth_tty_available = False
-            raise InstallError(
-                "GitHub n'est pas authentifié et aucun terminal interactif sûr n'est disponible; "
-                "aucune installation n'a été lancée."
-            ) from exc
 
     def _gh_is_authenticated(self) -> bool:
         executable = shutil.which("gh", path=self.target_path)
@@ -950,8 +1013,9 @@ class UbuntuBootstrap:
                     manifest = json.loads(self.state_path.read_text(encoding="utf-8"))
                 except (OSError, json.JSONDecodeError) as exc:
                     raise InstallError("Le manifeste dev-bootstrap est illisible ou invalide.") from exc
-                if not isinstance(manifest, dict) or manifest.get("schema") != 1 or not isinstance(manifest.get("tools"), dict):
+                if not isinstance(manifest, dict) or manifest.get("schema") not in (1, 2) or not isinstance(manifest.get("tools"), dict):
                     raise InstallError("Schéma du manifeste dev-bootstrap inconnu; aucune mise à jour effectuée.")
+                manifest["schema"] = 2  # Legacy v1 is migrated only when a write is needed.
                 self.manifest = manifest
             else:
                 if self.prefix.exists() and any(self.prefix.iterdir()):
@@ -959,14 +1023,53 @@ class UbuntuBootstrap:
                         "Le répertoire dev-bootstrap contient des fichiers sans manifeste; "
                         "ils ne seront pas écrasés."
                     )
-                self.manifest = {"schema": 1, "tools": {}}
+                self.manifest = {"schema": 2, "tools": {}}
+
+    def uninstall(self) -> None:
+        """Remove verified user binaries only; leave shared APT and npm packages alone."""
+        self._load_manifest()
+        if "pending_binary" in self.manifest or "pending_npm" in self.manifest:
+            raise InstallError("Transaction utilisateur inachevée; reprenez l'installation avant désinstallation.")
+        tools = self.manifest["tools"]
+        with self.target_file_privileges():
+            for name, record in tools.items():
+                if (not isinstance(name, str) or not re.fullmatch(r"[a-z][a-z0-9-]*", name)
+                        or not isinstance(record, dict)
+                        or not re.fullmatch(r"[0-9a-f]{64}", str(record.get("sha256", "")))):
+                    raise InstallError("Entrée de manifeste invalide; désinstallation interrompue.")
+                path = self.bin_dir / name
+                if path.is_symlink():
+                    if os.readlink(path) != record.get("link"):
+                        raise InstallError(f"Lien géré modifié: {path}.")
+                    resolved = path.resolve(strict=True)
+                    if not resolved.is_relative_to(self.prefix.resolve()) or self._file_sha256(resolved) != record["sha256"]:
+                        raise InstallError(f"Binaire géré modifié: {path}.")
+                elif (not path.is_file() or path.stat().st_uid != self.target.uid
+                      or self._file_sha256(path) != record["sha256"]):
+                    raise InstallError(f"Binaire géré modifié ou absent: {path}.")
+            if self.dry_run:
+                print("Désinstallation à blanc: binaires utilisateur vérifiés; aucun paquet APT ou npm supprimé.")
+                return
+            for name in tools:
+                (self.bin_dir / name).unlink()
+            if tools:
+                self.manifest["tools"] = {}
+                self._save_manifest()
+            print("Binaires gérés retirés. Paquets APT, npm globaux et configuration shell conservés.")
 
     def _check_apt_source_conflicts(self) -> None:
+        for directory in (Path("/etc/apt/keyrings"), Path("/etc/apt/sources.list.d")):
+            if directory.exists() or directory.is_symlink():
+                self._check_root_directory(directory)
         expected = self._expected_sources()
+        for name in ("dev-bootstrap-nodesource.gpg", "dev-bootstrap-github-cli.gpg",
+                     "dev-bootstrap-docker.asc"):
+            key_path = Path("/etc/apt/keyrings") / name
+            if key_path.exists() or key_path.is_symlink():
+                self._check_root_file(key_path)
         for managed_path, expected_content in expected.items():
             if managed_path.exists() or managed_path.is_symlink():
-                if managed_path.is_symlink() or not managed_path.is_file():
-                    raise InstallError(f"Configuration APT gérée non sûre: {managed_path}.")
+                self._check_root_file(managed_path)
                 try:
                     current_content = managed_path.read_text(encoding="utf-8")
                 except (OSError, UnicodeDecodeError) as exc:
@@ -1107,15 +1210,18 @@ class UbuntuBootstrap:
         self._check_node_manager_conflicts()
         self._check_docker_conflicts()
         self._check_apt_source_conflicts()
+        self._check_npm_prefix()
         self.gh_authenticated = self._gh_is_authenticated()
-        if not self.dry_run and not self.gh_authenticated:
+        if not self.dry_run and not self.gh_authenticated and self.github_auth_requested:
             self._check_tty()
+            if not self.auth_tty_available:
+                raise InstallError("--github-auth requiert un terminal sûr avant toute modification.")
         if not self.dry_run and os.geteuid() != 0:
             self.set_step("validation de sudo avant toute modification")
             result = subprocess.run(
                 [self._system_executable("sudo"), "-v"],
                 check=False,
-                env={**os.environ, "PATH": self.SYSTEM_PATH},
+                env=self._privileged_env(),
             )
             if result.returncode != 0:
                 raise InstallError("L'authentification sudo a échoué; aucune installation n'a commencé.")
@@ -1125,20 +1231,40 @@ class UbuntuBootstrap:
         for tool in ("node", "npm", "pnpm", "bun", "uv", "zoxide", "fzf", "gh"):
             value = self.plan[tool] if isinstance(self.plan.get(tool), str) else self.plan[tool]["version"]
             print(f"  {tool}: {value}")
+        print("  APT: candidat installable non vérifié en mode à blanc; Node/GitHub ci-dessus sont les dernières releases amont.")
         print("  Docker: dernière version stable publiée dans le dépôt APT officiel Docker")
         print("  Docker Compose: dernière version stable publiée dans le dépôt APT officiel Docker")
         print(f"  Ubuntu: {self.version_id} ({self.codename}), architecture {self.arch}")
         if not self.gh_authenticated:
-            print("  GitHub: une invite de token masquée sera nécessaire pendant l'installation complète")
+            print("  GitHub: authentification facultative (--github-auth pour demander un token masqué)")
+
+    @staticmethod
+    def _check_root_directory(path: Path) -> None:
+        if path.is_symlink() or not path.is_dir():
+            raise InstallError(f"Répertoire système non sûr: {path}.")
+        metadata = path.stat()
+        if metadata.st_uid != 0 or metadata.st_mode & 0o022:
+            raise InstallError(f"Répertoire système non sûr (propriétaire ou écriture de groupe/autres): {path}.")
+
+    @staticmethod
+    def _check_root_file(path: Path) -> None:
+        if (path.is_symlink() or not path.is_file() or path.stat().st_uid != 0
+                or stat.S_IMODE(path.stat().st_mode) != 0o644):
+            raise InstallError(f"Fichier système non sûr (propriétaire ou mode): {path}.")
 
     def _ensure_root_directory(self, path: Path, mode: int = 0o755) -> None:
+        existed = path.exists() or path.is_symlink()
+        if existed:
+            self._check_root_directory(path)
         if os.geteuid() == 0:
             path.mkdir(mode=mode, parents=True, exist_ok=True)
-            if path.is_symlink() or not path.is_dir():
-                raise InstallError(f"Répertoire système non sûr: {path}.")
-            os.chmod(path, mode)
+            self._check_root_directory(path)
+            if not existed:
+                os.chmod(path, mode)
         else:
-            self.system_command(["install", "-d", "-m", f"{mode:04o}", str(path)])
+            if not existed:
+                self.system_command(["install", "-d", "-m", f"{mode:04o}", str(path)])
+                self._check_root_directory(path)
 
     def _write_root_file(
         self,
@@ -1147,12 +1273,16 @@ class UbuntuBootstrap:
         mode: int = 0o644,
         *,
         allow_managed_transition: bool = False,
+        allow_key_rotation: bool = False,
     ) -> None:
         if path.is_symlink():
             raise InstallError(f"Fichier système non sûr: {path}.")
         if path.exists():
             if not path.is_file():
                 raise InstallError(f"Fichier système non sûr: {path}.")
+            metadata = path.stat()
+            if metadata.st_uid != 0 or stat.S_IMODE(metadata.st_mode) != mode:
+                raise InstallError(f"Fichier système non sûr (propriétaire ou mode): {path}.")
             try:
                 old_data = path.read_bytes()
                 if old_data == data:
@@ -1160,11 +1290,13 @@ class UbuntuBootstrap:
             except OSError as exc:
                 raise InstallError(f"Impossible de lire {path}.") from exc
             if (
-                not allow_managed_transition
-                or path.parent != Path("/etc/apt/sources.list.d")
-                or not is_safe_managed_source_transition(
-                    path, old_data.decode("utf-8", errors="replace"), data.decode("utf-8", errors="replace")
-                )
+                not (allow_key_rotation and path.parent == Path("/etc/apt/keyrings")
+                     and path.name.startswith("dev-bootstrap-"))
+                and not (allow_managed_transition
+                         and path.parent == Path("/etc/apt/sources.list.d")
+                         and is_safe_managed_source_transition(
+                             path, old_data.decode("utf-8", errors="replace"), data.decode("utf-8", errors="replace")
+                         ))
             ):
                 raise InstallError(f"Refus d'écraser le fichier système existant {path}.")
         self._ensure_root_directory(path.parent)
@@ -1179,10 +1311,13 @@ class UbuntuBootstrap:
                     os.fsync(stream.fileno())
                 os.chmod(temporary, mode)
                 os.replace(temporary, path)
+                self._fsync_directory(path.parent)
             else:
                 self.system_command(["tee", str(temporary)], input_data=data, capture=True)
                 self.system_command(["chmod", f"{mode:04o}", str(temporary)])
+                self.system_command(["sync", str(temporary)])
                 self.system_command(["mv", "--", str(temporary), str(path)])
+                self._fsync_directory(path.parent)
         except (OSError, InstallError) as exc:
             if os.geteuid() == 0:
                 temporary.unlink(missing_ok=True)
@@ -1191,19 +1326,25 @@ class UbuntuBootstrap:
     def _gpg_fingerprints(self, key_data: bytes) -> set[str]:
         try:
             result = subprocess.run(
-                [self._system_executable("gpg"), "--show-keys", "--with-colons", "--fingerprint", "-"],
+                [self._system_executable("gpg"), "--no-options", "--show-keys", "--with-colons", "--fingerprint", "-"],
                 input=key_data, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
-                env={**os.environ, "PATH": self.SYSTEM_PATH},
+                env=self._privileged_env(),
             )
         except OSError as exc:
             raise InstallError("Impossible de lancer gpg pour vérifier une clé APT.") from exc
         if result.returncode != 0:
             raise InstallError("Une clé APT téléchargée est invalide ou illisible par gpg.")
-        fingerprints = {
-            line.split(":")[9].upper()
-            for line in result.stdout.decode("utf-8", errors="replace").splitlines()
-            if line.startswith("fpr:") and len(line.split(":")) > 9
-        }
+        fingerprints: set[str] = set()
+        primary = False
+        for line in result.stdout.decode("utf-8", errors="replace").splitlines():
+            fields = line.split(":")
+            if fields[0] in ("pub", "sub"):
+                primary = fields[0] == "pub"
+            elif fields[0] == "fpr" and primary:
+                if len(fields) <= 9 or not re.fullmatch(r"[0-9A-Fa-f]{40}", fields[9]):
+                    raise InstallError("Empreinte primaire APT invalide.")
+                fingerprints.add(fields[9].upper())
+                primary = False
         if not fingerprints:
             raise InstallError("Aucune empreinte n'a été trouvée dans une clé APT.")
         return fingerprints
@@ -1216,13 +1357,14 @@ class UbuntuBootstrap:
             if actual != expected_sha256:
                 raise InstallError(f"Le checksum SHA-256 officiel de la clé {name} ne correspond pas.")
         fingerprints = self._gpg_fingerprints(raw)
-        if name == "github-cli" and not GH_CLI_FINGERPRINTS.issubset(fingerprints):
-            raise InstallError("Les empreintes de la clé GitHub CLI ne correspondent pas à sa documentation officielle.")
+        trusted = APT_KEY_TRUST_V1.get(name)
+        if not trusted or not fingerprints or not fingerprints.issubset(trusted):
+            raise InstallError(f"Empreinte primaire inconnue dans la clé APT {name} (trust v1).")
         if dearmor:
             result = subprocess.run(
-                [self._system_executable("gpg"), "--dearmor", "--batch"], input=raw,
+                [self._system_executable("gpg"), "--no-options", "--dearmor", "--batch"], input=raw,
                 stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
-                env={**os.environ, "PATH": self.SYSTEM_PATH},
+                env=self._privileged_env(),
             )
             if result.returncode != 0 or not result.stdout:
                 raise InstallError(f"La clé APT {name} n'a pas pu être convertie au format binaire.")
@@ -1235,25 +1377,21 @@ class UbuntuBootstrap:
             key_data = raw
             key_path = Path("/etc/apt/keyrings/dev-bootstrap-github-cli.gpg")
         if key_path.exists():
-            if key_path.is_symlink() or not key_path.is_file():
-                raise InstallError(f"Fichier de clé APT non sûr: {key_path}.")
+            self._check_root_file(key_path)
             old_fingerprints = self._gpg_fingerprints(key_path.read_bytes())
-            if old_fingerprints != fingerprints:
+            if not old_fingerprints.issubset(trusted):
                 raise InstallError(
-                    f"La clé existante {key_path} diffère de la clé officielle actuelle; "
-                    "aucune rotation automatique n'a été effectuée."
+                    f"La clé existante {key_path} n'appartient pas à la liste de confiance v1."
                 )
-            return
-        self._write_root_file(key_path, key_data, 0o644)
+            self._write_root_file(key_path, key_data, 0o644, allow_key_rotation=True)
+        else:
+            self._write_root_file(key_path, key_data, 0o644)
 
     def _install_sources(self) -> None:
         self.set_step("configuration des dépôts APT officiels avec Signed-By")
         if shutil.which("gpg", path=self.SYSTEM_PATH) is None:
             self.system_command(["apt-get", "update"], label="mise à jour des index Ubuntu requis pour gpg")
-            self.system_command(
-                ["apt-get", "install", "--yes", "--no-install-recommends", "ca-certificates", "gnupg"],
-                label="installation des prérequis de signature APT",
-            )
+            self._safe_apt_install(["ca-certificates", "gnupg"], "installation des prérequis de signature APT")
         self._ensure_root_directory(Path("/etc/apt/keyrings"))
         self._ensure_root_directory(Path("/etc/apt/sources.list.d"))
         self._prepare_key(
@@ -1261,7 +1399,6 @@ class UbuntuBootstrap:
         )
         self._prepare_key(
             "github-cli", f"{GH_CLI_BASE}/githubcli-archive-keyring.gpg",
-            expected_sha256=GH_CLI_KEY_SHA256,
         )
         self._prepare_key("docker", f"{DOCKER_BASE}/gpg")
         for path, content in self._expected_sources().items():
@@ -1277,22 +1414,46 @@ class UbuntuBootstrap:
         if not candidate_match or candidate_match.group(1) == "(none)":
             raise InstallError(f"Aucun candidat APT officiel n'est disponible pour {package}.")
         candidate = candidate_match.group(1)
-        madison = self.system_command(["apt-cache", "madison", package], capture=True)
-        published = False
-        for line in madison.stdout.splitlines():
-            fields = [field.strip() for field in line.split("|", 2)]
-            if len(fields) == 3 and fields[1] == candidate and repository_marker in fields[2]:
-                published = True
-                break
-        if not published:
+        if package == "nodejs":
+            expected_url, suite_component = f"{NODESOURCE_BASE}/node_{self.plan['node_major']}.x", "nodistro/main"
+        elif package == "gh":
+            expected_url, suite_component = GH_CLI_BASE, "stable/main"
+        elif package in self.APT_PACKAGES:
+            expected_url, suite_component = DOCKER_BASE, f"{self.codename}/stable"
+        else:
+            raise InstallError(f"Paquet APT inattendu: {package}.")
+        if repository_marker != expected_url.removeprefix("https://"):
+            raise InstallError(f"Dépôt APT inattendu pour {package}.")
+
+        in_candidate = False
+        sources: list[tuple[int, str, str, str]] = []
+        for line in policy.stdout.splitlines():
+            version_line = re.fullmatch(r"\s*(?:\*\*\*\s+)?(\S+)\s+(-?\d+)\s*", line)
+            if version_line:
+                in_candidate = version_line.group(1) == candidate
+                continue
+            if not in_candidate:
+                continue
+            source_line = re.fullmatch(r"\s+(-?\d+)\s+(\S+)\s+(\S+)\s+(\S+)\s+Packages\s*", line)
+            if source_line:
+                sources.append((int(source_line.group(1)), source_line.group(2),
+                                source_line.group(3), source_line.group(4)))
+            elif re.fullmatch(r"\s+\d+\s+/var/lib/dpkg/status\s*", line):
+                continue
+            elif line.strip() and not line.lstrip().startswith(("release ", "origin ")):
+                raise InstallError(f"Provenance APT du candidat {package} non reconnue: {line.strip()}.")
+        if not sources or any(
+            url != expected_url or suite != suite_component or arch != self.arch
+            for _, url, suite, arch in sources
+        ):
             raise InstallError(
-                f"Le candidat {package}={candidate} ne provient pas du dépôt officiel attendu ({repository_marker})."
+                f"La provenance APT du candidat {package}={candidate} ne correspond pas exclusivement au dépôt officiel attendu ({expected_url})."
             )
         return candidate
 
     @staticmethod
     def _semver_from_package_version(version: str) -> str:
-        match = re.search(r"(?<!\d)(\d+\.\d+\.\d+)(?!\d)", version)
+        match = re.fullmatch(r"(?:\d+:)?(\d+\.\d+\.\d+)(?:-[0-9][A-Za-z0-9.+~]*)?", version)
         if not match:
             raise InstallError(f"Impossible d'extraire une version stable depuis le paquet APT {version!r}.")
         return match.group(1)
@@ -1311,29 +1472,54 @@ class UbuntuBootstrap:
         }
         node_candidate = self._semver_from_package_version(candidates["nodejs"])
         gh_candidate = self._semver_from_package_version(candidates["gh"])
-        if node_candidate != self.plan["node"]:
+        parsed_node = _parse_stable_version(node_candidate)
+        parsed_upstream_node = _parse_stable_version(self.plan["node"])
+        if (parsed_node is None or parsed_upstream_node is None
+                or node_candidate.split(".", 1)[0] != self.plan["node_major"]
+                or parsed_node > parsed_upstream_node):
             raise InstallError(
-                f"NodeSource propose {node_candidate}, mais l'index Node.js annonce {self.plan['node']}; "
+                f"NodeSource propose {node_candidate}, hors branche LTS {self.plan['node_major']}; "
                 "aucun paquet n'a été installé."
             )
-        if gh_candidate != self.plan["gh"]:
-            raise InstallError(
-                f"Le dépôt APT GitHub CLI propose {gh_candidate}, mais la dernière release stable est {self.plan['gh']}."
-            )
+        parsed_gh = _parse_stable_version(gh_candidate)
+        parsed_upstream_gh = _parse_stable_version(self.plan["gh"])
+        if parsed_gh is None or parsed_upstream_gh is None or parsed_gh > parsed_upstream_gh:
+            raise InstallError(f"Candidat GitHub CLI instable: {gh_candidate}.")
+        if node_candidate != self.plan["node"]:
+            for package in ("npm", "pnpm"):
+                packument = fetch_https_json(
+                    f"{NPM_REGISTRY}/{package}",
+                    accept="application/vnd.npm.install-v1+json", max_bytes=20_000_000,
+                )
+                self.plan[package] = select_latest_compatible_package(packument, node_candidate)
         self.apt_candidates = candidates
+        # The signed repository may lag behind upstream; report and verify the
+        # version actually selected for installation rather than upstream latest.
+        self.plan["node"] = node_candidate
+        self.plan["gh"] = gh_candidate
+
+    def _safe_apt_install(self, packages: list[str], label: str) -> None:
+        # Simulation is advisory; --no-remove remains a hard guard at execution time.
+        options = ["install", "--yes", "--no-install-recommends", "--no-remove", *packages]
+        simulated = self.system_command(["apt-get", "-s", *options], capture=True, label=label)
+        if any(line.startswith("Remv ") for line in simulated.stdout.splitlines()):
+            raise InstallError(f"{label}: APT retirerait des paquets existants; intervention manuelle requise.")
+        self.system_command(["apt-get", *options], label=label)
 
     def _install_apt_packages(self) -> None:
         self._resolve_apt_candidates()
         self.set_step("installation ou mise à jour des paquets APT officiels")
         self.apt_before = {package: self._package_installed_version(package) for package in self.APT_PACKAGES}
-        self.system_command(
-            ["apt-get", "install", "--yes", "--no-install-recommends", *self.APT_PACKAGES],
-            label="installation des paquets NodeSource, GitHub CLI et Docker",
+        self._safe_apt_install(
+            [f"{package}={self.apt_candidates[package]}" for package in self.APT_PACKAGES],
+            "installation des paquets NodeSource, GitHub CLI et Docker",
         )
         for package in self.APT_PACKAGES:
             after = self._package_installed_version(package)
             if after is None:
                 raise InstallError(f"Le paquet {package} n'est pas installé après apt-get.")
+            if after != self.apt_candidates[package]:
+                raise InstallError(f"{package}: version installée {after}, attendue {self.apt_candidates[package]}.")
             before = self.apt_before[package]
             self.status[package] = "déjà conforme" if before == after else ("mis à jour" if before else "installé")
 
@@ -1349,17 +1535,14 @@ class UbuntuBootstrap:
 
     def download_verified_artifacts(self) -> None:
         self.set_step("téléchargement et vérification SHA-256 des binaires officiels")
-        self.artifacts: dict[str, bytes] = {}
+        self.artifacts: dict[str, Path] = {}
         for tool in ("bun", "uv", "zoxide", "fzf"):
             asset = self.plan[tool]["asset"]
-            data = fetch_https_bytes(
-                str(asset["url"]), accept="application/octet-stream", max_bytes=int(asset["size"])
+            destination = Path(self._artifact_directory) / tool
+            download_verified_file(
+                str(asset["url"]), destination, int(asset["size"]), str(asset["sha256"])
             )
-            if len(data) != int(asset["size"]):
-                raise InstallError(f"Téléchargement incomplet pour {tool}.")
-            if hashlib.sha256(data).hexdigest() != asset["sha256"]:
-                raise InstallError(f"Le checksum SHA-256 officiel ne correspond pas pour {tool}.")
-            self.artifacts[tool] = data
+            self.artifacts[tool] = destination
 
     def _ensure_user_directory(self, path: Path, mode: int = 0o755) -> None:
         with self.target_file_privileges():
@@ -1376,13 +1559,19 @@ class UbuntuBootstrap:
             if not existed:
                 os.chmod(path, mode)
 
+    @staticmethod
+    def _fsync_directory(path: Path) -> None:
+        fsync_directory(path)
+
     def _atomic_user_write(self, path: Path, data: bytes, mode: int = 0o644) -> None:
+        if not path.is_relative_to(self.home):
+            raise InstallError(f"Écriture hors du répertoire utilisateur: {path}.")
+        self._ensure_user_directory(path.parent, 0o700)
         with self.target_file_privileges():
             if path.is_symlink():
                 raise InstallError(f"Fichier utilisateur symbolique refusé: {path}.")
             if path.exists() and (not path.is_file() or path.stat().st_uid != self.target.uid):
                 raise InstallError(f"Fichier utilisateur non sûr: {path}.")
-            path.parent.mkdir(mode=0o755, parents=True, exist_ok=True)
             old_mode = stat.S_IMODE(path.stat().st_mode) if path.exists() else mode
             fd, temp_name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
             temp = Path(temp_name)
@@ -1393,6 +1582,7 @@ class UbuntuBootstrap:
                     os.fsync(stream.fileno())
                 os.chmod(temp, old_mode)
                 os.replace(temp, path)
+                self._fsync_directory(path.parent)
             except OSError as exc:
                 temp.unlink(missing_ok=True)
                 raise InstallError(f"Impossible d'écrire atomiquement {path}.") from exc
@@ -1426,6 +1616,19 @@ class UbuntuBootstrap:
         destination = self.bin_dir / name
         tools = self.manifest.setdefault("tools", {})
         record = tools.get(name)
+        new_hash = hashlib.sha256(data).hexdigest()
+        pending = self.manifest.get("pending_binary")
+        if pending is not None:
+            if pending != {"name": name, "version": version, "sha256": new_hash}:
+                raise InstallError("Transition binaire en attente incompatible; intervention manuelle requise.")
+            if destination.exists() and not destination.is_symlink() and destination.is_file():
+                if self._file_sha256(destination) == new_hash:
+                    if self._version_at_path(destination, name) != version:
+                        raise InstallError(f"Binaire {name} publié mais version invalide.")
+                    tools[name] = {"version": version, "sha256": new_hash}
+                    self.manifest.pop("pending_binary")
+                    self._save_manifest()
+                    return "mis à jour" if isinstance(record, dict) else "installé"
         if destination.exists():
             if destination.is_symlink() or not destination.is_file():
                 raise InstallError(f"La cible utilisateur {destination} n'est pas un binaire régulier.")
@@ -1437,24 +1640,43 @@ class UbuntuBootstrap:
             old_version = self._version_at_path(destination, name)
             if old_version != record.get("version"):
                 raise InstallError(f"La version du binaire géré {name} ne correspond pas au manifeste.")
-            if old_version == version:
+            if old_version == version and old_hash == new_hash:
                 return "déjà conforme"
             outcome = "mis à jour"
         else:
             external = shutil.which(name, path=self.target_path)
             if external:
                 current_version = self._version_at_path(Path(external), name)
-                if current_version == version:
+                # A matching version string is not evidence of an official asset.
+                if (current_version == version and Path(external).is_file()
+                        and not Path(external).is_symlink()
+                        and self._file_sha256(Path(external)) == new_hash):
                     return "déjà conforme"
                 outcome = "mis à jour"
             else:
                 outcome = "installé"
 
+        # Verify the candidate before publishing it: a failing or interrupted
+        # executable must not replace the previously recorded binary.
+        with self.target_file_privileges():
+            fd, staged_name = tempfile.mkstemp(prefix=f".{name}.verify-", dir=self.bin_dir)
+            staged = Path(staged_name)
+            try:
+                with os.fdopen(fd, "wb") as stream:
+                    stream.write(data)
+                    stream.flush()
+                    os.fsync(stream.fileno())
+                os.chmod(staged, 0o755)
+                actual = self._version_at_path(staged, name)
+                if actual != version:
+                    raise InstallError(f"{name} affiche {actual}, version stable attendue {version}.")
+            finally:
+                staged.unlink(missing_ok=True)
+        self.manifest["pending_binary"] = {"name": name, "version": version, "sha256": new_hash}
+        self._save_manifest()
         self._atomic_user_write(destination, data, 0o755)
-        actual = self._version_at_path(destination, name)
-        if actual != version:
-            raise InstallError(f"{name} affiche {actual}, version stable attendue {version}.")
-        tools[name] = {"version": version, "sha256": self._file_sha256(destination)}
+        tools[name] = {"version": version, "sha256": new_hash}
+        self.manifest.pop("pending_binary")
         self._save_manifest()
         return outcome
 
@@ -1500,6 +1722,8 @@ class UbuntuBootstrap:
             return False
         record = self.manifest.get("tools", {}).get(name)
         if not isinstance(record, dict):
+            if name in self.manifest.get("pending_npm", {}).get("bins", {}):
+                return False
             raise InstallError(f"Le binaire npm/pnpm {path} existe sans correspondance fiable au manifeste.")
         if path.is_symlink():
             link = os.readlink(path)
@@ -1520,8 +1744,113 @@ class UbuntuBootstrap:
             raise InstallError(f"Le binaire npm/pnpm {path} a été modifié hors script.")
         return True
 
+    def _npm_package_snapshot(self, name: str) -> dict[str, str]:
+        """Inventory every entry in a managed npm package, not merely its executable."""
+        root = self.prefix / "lib" / "node_modules" / name
+        if root.is_symlink() or not root.is_dir():
+            raise InstallError(f"Paquet npm géré absent ou symbolique: {root}.")
+        entries: dict[str, str] = {}
+        try:
+            def traversal_error(error: OSError) -> None:
+                raise error
+
+            for parent, directories, files in os.walk(root, followlinks=False, onerror=traversal_error):
+                for item in sorted([Path(parent), *(Path(parent) / part for part in directories + files)]):
+                    relative = str(item.relative_to(root))
+                    metadata = item.lstat()
+                    if metadata.st_uid != self.target.uid:
+                        raise InstallError(f"Propriétaire inattendu dans le paquet npm: {item}.")
+                    mode = stat.S_IMODE(metadata.st_mode)
+                    if item.is_symlink():
+                        value = f"link:{mode:o}:{os.readlink(item)}"
+                    elif item.is_dir():
+                        value = f"dir:{mode:o}"
+                    elif item.is_file():
+                        value = f"file:{mode:o}:{self._file_sha256(item)}"
+                    else:
+                        raise InstallError(f"Entrée npm non sûre: {item}.")
+                    entries[relative] = value
+        except OSError as exc:
+            raise InstallError(f"Impossible d'inventorier le paquet npm {root}.") from exc
+        return entries
+
+    def _check_npm_prefix(self) -> None:
+        """Reject unknown prefix contents before npm can rewrite any of them."""
+        if not self.prefix.exists():
+            return
+        if self.prefix.is_symlink() or not self.prefix.is_dir() or self.prefix.stat().st_uid != self.target.uid:
+            raise InstallError("Préfixe npm non sûr.")
+        for parent, names in ((self.prefix, {"bin", "lib"}),
+                              (self.prefix / "lib", {"node_modules"}),
+                              (self.prefix / "lib" / "node_modules", {"npm", "pnpm"})):
+            if parent.exists():
+                if parent.is_symlink() or not parent.is_dir() or parent.stat().st_uid != self.target.uid:
+                    raise InstallError(f"Répertoire npm non sûr: {parent}.")
+                if {p.name for p in parent.iterdir()} - names:
+                    raise InstallError(f"Contenu non suivi dans le préfixe npm: {parent}.")
+        package_records = self.manifest.get("npm_packages", {})
+        if not isinstance(package_records, dict):
+            raise InstallError("Inventaire npm invalide.")
+        pending = self.manifest.get("pending_npm", {})
+        if (not isinstance(pending, dict) or set(pending) - {"packages", "bins"}
+                or not isinstance(pending.get("packages", {}), dict)
+                or not isinstance(pending.get("bins", {}), dict)):
+            raise InstallError("Inventaire npm en attente invalide.")
+        pending_packages = pending.get("packages", {})
+        pending_bins = pending.get("bins", {})
+        if set(pending_packages) - {"npm", "pnpm"} or set(pending_bins) - {"npm", "pnpm", "npx", "pnpx"}:
+            raise InstallError("Entrée npm en attente inattendue.")
+        for name in ("npm", "pnpm"):
+            package = self.prefix / "lib" / "node_modules" / name
+            if package.exists() or package.is_symlink():
+                if (package_records.get(name) if name not in pending_packages else pending_packages[name]) != self._npm_package_snapshot(name):
+                    raise InstallError(f"Paquet npm {name} absent du manifeste ou modifié; refus d'écraser.")
+            elif name in package_records or name in pending_packages:
+                raise InstallError(f"Paquet npm {name} absent malgré son inventaire.")
+        if self.bin_dir.exists():
+            if self.bin_dir.is_symlink() or not self.bin_dir.is_dir() or self.bin_dir.stat().st_uid != self.target.uid:
+                raise InstallError("Répertoire binaire npm non sûr.")
+            if {p.name for p in self.bin_dir.iterdir()} - set(self.manifest.get("tools", {})) - set(pending_bins):
+                raise InstallError("Binaire non suivi dans le préfixe npm.")
+            for name, record in pending_bins.items():
+                if not isinstance(record, dict) or record != self._npm_binary_snapshot(name):
+                    raise InstallError(f"Binaire npm {name} en attente modifié; refus d'écraser.")
+            for name in ("npx", "pnpx"):
+                if name in self.manifest.get("tools", {}) and name not in pending_bins:
+                    record = self.manifest["tools"][name]
+                    if not isinstance(record, dict) or record != self._npm_binary_snapshot(name):
+                        raise InstallError(f"Binaire npm auxiliaire {name} modifié; refus d'écraser.")
+
+    def _npm_binary_snapshot(self, name: str) -> dict[str, str]:
+        path = self.bin_dir / name
+        if path.is_symlink():
+            resolved = path.resolve(strict=True)
+            if not resolved.is_relative_to(self.prefix.resolve()):
+                raise InstallError(f"Lien npm hors du préfixe géré: {path}.")
+            return {"link": os.readlink(path), "sha256": self._file_sha256(resolved)}
+        if not path.is_file() or path.stat().st_uid != self.target.uid:
+            raise InstallError(f"Binaire npm non sûr: {path}.")
+        return {"sha256": self._file_sha256(path)}
+
+    def _record_failed_npm_install(self) -> None:
+        """Remember only the exact partial files created by this attempted install."""
+        packages: dict[str, dict[str, str]] = {}
+        bins: dict[str, dict[str, str]] = {}
+        for name in ("npm", "pnpm"):
+            package = self.prefix / "lib/node_modules" / name
+            if package.exists() or package.is_symlink():
+                packages[name] = self._npm_package_snapshot(name)
+        for name in ("npm", "pnpm", "npx", "pnpx"):
+            binary = self.bin_dir / name
+            if binary.exists() or binary.is_symlink():
+                bins[name] = self._npm_binary_snapshot(name)
+        self.manifest["pending_npm"] = {"packages": packages, "bins": bins}
+        self._check_npm_prefix()
+        self._save_manifest()
+
     def _configure_npm_tools(self) -> None:
         self.set_step("installation de npm et pnpm compatibles dans l'espace utilisateur")
+        self._check_npm_prefix()
         expected = {"npm": self.plan["npm"], "pnpm": self.plan["pnpm"]}
         outdated: list[str] = []
         previously_present: dict[str, bool] = {}
@@ -1529,14 +1858,15 @@ class UbuntuBootstrap:
         if not package_manager:
             raise InstallError("npm fourni par NodeSource est absent après l'installation de Node.js.")
         for name, wanted in expected.items():
-            managed = self._package_binary_is_managed(name)
+            pending_name = (name in self.manifest.get("pending_npm", {}).get("packages", {})
+                            or name in self.manifest.get("pending_npm", {}).get("bins", {}))
+            managed = False if pending_name else self._package_binary_is_managed(name)
             current = self._tool_version(name)
             previously_present[name] = managed or current is not None
-            if current == wanted:
-                if managed:
-                    self.status[name] = "déjà conforme"
-                else:
-                    self.status[name] = "déjà conforme"
+            if current == wanted and managed and not pending_name:
+                if name not in self.manifest.get("npm_packages", {}):
+                    raise InstallError(f"Paquet npm {name} sans inventaire vérifié.")
+                self.status[name] = "déjà conforme"
                 self.verified_versions[name] = wanted
                 continue
             if managed:
@@ -1546,29 +1876,45 @@ class UbuntuBootstrap:
                     raise InstallError(f"Le binaire géré {name} ne correspond pas au manifeste.")
             outdated.append(f"{name}@{wanted}")
         if outdated:
-            self.user_command(
-                [
-                    package_manager, "install", "--global", "--prefix", str(self.prefix),
-                    "--registry", NPM_REGISTRY,
-                    "--engine-strict", "--no-audit", "--no-fund", *outdated,
-                ],
-                label="installation des paquets npm globaux dans le préfixe utilisateur",
-                timeout=900,
-            )
-            for name, wanted in expected.items():
-                if name not in {item.split("@", 1)[0] for item in outdated}:
-                    continue
-                executable = self.bin_dir / name
-                current = self._version_at_path(executable, name)
-                if current != wanted:
-                    raise InstallError(f"{name} affiche {current}, version stable attendue {wanted}.")
-                self.manifest.setdefault("tools", {})[name] = {
-                    "version": wanted,
-                    "sha256": self._file_sha256(executable.resolve()),
-                    "link": os.readlink(executable) if executable.is_symlink() else None,
-                }
-                self.status[name] = "mis à jour" if previously_present[name] else "installé"
-                self.verified_versions[name.capitalize()] = wanted
+            try:
+                self.user_command(
+                    [
+                        package_manager, "install", "--global", "--prefix", str(self.prefix),
+                        "--registry", NPM_REGISTRY,
+                        "--engine-strict", "--ignore-scripts", "--no-audit", "--no-fund", *outdated,
+                    ],
+                    label="installation des paquets npm globaux dans le préfixe utilisateur",
+                    timeout=900,
+                )
+            except (InstallError, KeyboardInterrupt):
+                self._record_failed_npm_install()
+                raise
+            try:
+                for name, wanted in expected.items():
+                    if name not in {item.split("@", 1)[0] for item in outdated}:
+                        continue
+                    executable = self.bin_dir / name
+                    current = self._version_at_path(executable, name)
+                    if current != wanted:
+                        raise InstallError(f"{name} affiche {current}, version stable attendue {wanted}.")
+                    self.manifest.setdefault("tools", {})[name] = {
+                        "version": wanted,
+                        "sha256": self._file_sha256(executable.resolve()),
+                        "link": os.readlink(executable) if executable.is_symlink() else None,
+                    }
+                    self.manifest.setdefault("npm_packages", {})[name] = self._npm_package_snapshot(name)
+                    self.status[name] = "mis à jour" if previously_present[name] else "installé"
+                    self.verified_versions[name.capitalize()] = wanted
+                for name in ("npx", "pnpx"):
+                    binary = self.bin_dir / name
+                    if binary.exists() or binary.is_symlink():
+                        self.manifest.setdefault("tools", {})[name] = self._npm_binary_snapshot(name)
+                    elif name in self.manifest.get("tools", {}):
+                        raise InstallError(f"Binaire npm auxiliaire {name} absent après installation.")
+            except (InstallError, KeyboardInterrupt):
+                self._record_failed_npm_install()
+                raise
+            self.manifest.pop("pending_npm", None)
             self._save_manifest()
 
     def _outside_managed_config(self, text: str) -> str:
@@ -1583,41 +1929,27 @@ class UbuntuBootstrap:
         return "".join(lines[:starts[0]]) + "".join(lines[ends[0] + 1:])
 
     def _shell_config_body(self, shell_name: str, existing: str) -> str:
-        outside = self._outside_managed_config(existing)
-        active = [line.strip() for line in outside.splitlines() if line.strip() and not line.lstrip().startswith("#")]
+        self._outside_managed_config(existing)  # Reject malformed markers; never trust lookalike commands.
         body: list[str] = []
-        managed_bin = str(self.bin_dir)
-        managed_path_marker = f".local/share/{APP_NAME}/bin"
         shell_managed_bin = f"$HOME/.local/share/{APP_NAME}/bin"
-        if not any(managed_bin in line or managed_path_marker in line for line in active):
-            if shell_name == "fish":
-                body.append(
-                    f'if not contains -- "{shell_managed_bin}" $PATH; '
-                    f'set -gx PATH "{shell_managed_bin}" $PATH; end'
-                )
-            else:
-                body.append(
-                    f'case ":$PATH:" in *":{shell_managed_bin}:"*) ;; '
-                    f'*) export PATH="{shell_managed_bin}:$PATH" ;; esac'
-                )
-        zoxide_init = f"zoxide init {shell_name}"
-        if not any(zoxide_init in line for line in active):
-            if shell_name == "fish":
-                body.append("zoxide init fish | source")
-            else:
-                body.append(f'eval "$(zoxide init {shell_name})"')
-        fzf_init = {
-            "bash": "fzf --bash",
-            "zsh": "fzf --zsh",
-            "fish": "fzf --fish",
-        }[shell_name]
-        if not any(fzf_init in line for line in active):
-            if shell_name == "bash":
-                body.append('eval "$(fzf --bash)"')
-            elif shell_name == "zsh":
-                body.append("source <(fzf --zsh)")
-            else:
-                body.append("fzf --fish | source")
+        if shell_name == "fish":
+            body.append(
+                f'if not contains -- "{shell_managed_bin}" $PATH; '
+                f'set -gx PATH "{shell_managed_bin}" $PATH; end'
+            )
+            body.append("zoxide init fish | source")
+        else:
+            body.append(
+                f'case ":$PATH:" in *":{shell_managed_bin}:"*) ;; '
+                f'*) export PATH="{shell_managed_bin}:$PATH" ;; esac'
+            )
+            body.append(f'eval "$(zoxide init {shell_name})"')
+        if shell_name == "bash":
+            body.append('eval "$(fzf --bash)"')
+        elif shell_name == "zsh":
+            body.append("source <(fzf --zsh)")
+        else:
+            body.append("fzf --fish | source")
         return "\n".join(body)
 
     def _configure_shell(self) -> None:
@@ -1641,11 +1973,7 @@ class UbuntuBootstrap:
             self.status["shell"] = "configuré"
         else:
             self.status["shell"] = "déjà conforme"
-        final_text = path.read_text(encoding="utf-8")
-        if "zoxide init " + shell_name not in final_text:
-            raise InstallError("L'initialisation de zoxide est absente de la configuration du shell.")
-        if f"fzf --{shell_name}" not in final_text:
-            raise InstallError("L'initialisation de fzf est absente de la configuration du shell.")
+        self._verify_shell_configuration()
 
     def _read_token_masked(self) -> str:
         try:
@@ -1676,8 +2004,11 @@ class UbuntuBootstrap:
             self.gh_authenticated = True
             self.status["gh_auth"] = "déjà authentifié"
             return
+        if not getattr(self, "github_auth_requested", False):
+            self.status["gh_auth"] = "ignorée"
+            return
         if not self.auth_tty_available:
-            self._check_tty()
+            raise InstallError("--github-auth requiert un terminal sûr.")
         token = self._read_token_masked()
         try:
             result = self.user_command(
@@ -1708,12 +2039,17 @@ class UbuntuBootstrap:
 
     def _verify_shell_configuration(self) -> None:
         path = config_file_for_shell(self.home, self.target.shell)
-        if not path.is_file() or path.is_symlink():
+        if not path.is_file() or path.is_symlink() or path.stat().st_uid != self.target.uid:
             raise InstallError("Le fichier de configuration du shell est absent ou non sûr.")
         text = path.read_text(encoding="utf-8")
         shell_name = Path(self.target.shell).name
-        if "zoxide init " + shell_name not in text or f"fzf --{shell_name}" not in text:
-            raise InstallError("L'initialisation zoxide/fzf n'est pas présente dans le shell détecté.")
+        canonical = update_managed_block(
+            text, self.MANAGED_START, self.MANAGED_END,
+            self._shell_config_body(shell_name, text),
+        )
+        if (text.count(self.MANAGED_START) != 1 or text.count(self.MANAGED_END) != 1
+                or canonical != text):
+            raise InstallError("Le bloc shell canonique zoxide/fzf est absent ou modifié.")
 
     def verify_final_state(self) -> None:
         self.set_step("validation finale des versions, du service et de l'authentification")
@@ -1733,7 +2069,7 @@ class UbuntuBootstrap:
             "Docker Buildx", self._semver_from_package_version(self.apt_candidates["docker-buildx-plugin"]),
             ["docker", "buildx", "version"],
         )
-        if not self._gh_is_authenticated():
+        if self.gh_authenticated and not self._gh_is_authenticated():
             raise InstallError("L'authentification GitHub ne passe pas la vérification gh auth status.")
         active = self.system_command(
             ["systemctl", "is-active", "--quiet", "docker.service"],
@@ -1771,16 +2107,18 @@ class UbuntuBootstrap:
             if self.dry_run:
                 self.print_plan()
                 return 0
-            self.download_verified_artifacts()
-            self._install_sources()
-            self._install_apt_packages()
-            self._authenticate_github()
-            self._ensure_docker_service()
-            self._install_release_tools()
-            self._configure_npm_tools()
-            self._configure_shell()
-            self.verify_final_state()
-            self.print_report()
+            with tempfile.TemporaryDirectory(prefix="dev-bootstrap-assets-") as artifact_directory:
+                self._artifact_directory = artifact_directory
+                self.download_verified_artifacts()
+                self._install_sources()
+                self._install_apt_packages()
+                self._authenticate_github()
+                self._ensure_docker_service()
+                self._install_release_tools()
+                self._configure_npm_tools()
+                self._configure_shell()
+                self.verify_final_state()
+                self.print_report()
             return 0
         except KeyboardInterrupt:
             print(f"\nInterruption pendant {self.step}; les étapes achevées sont conservées.", file=sys.stderr)
@@ -1799,11 +2137,17 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument(
         "--dry-run", action="store_true",
-        help="Résout les versions et valide les sources sans modifier la machine.",
+        help="Résout les releases amont et valide les sources sans modification ; candidats APT non résolus (pas de --plan).",
     )
+    parser.add_argument("--uninstall", action="store_true", help="Retire les binaires utilisateur vérifiés (conserve APT et npm).")
+    parser.add_argument("--github-auth", action="store_true", help="Authentification GitHub facultative avec token masqué.")
     args = parser.parse_args(argv)
     try:
-        return UbuntuBootstrap(dry_run=args.dry_run).run()
+        bootstrap = UbuntuBootstrap(dry_run=args.dry_run, github_auth=args.github_auth)
+        if args.uninstall:
+            bootstrap.uninstall()
+            return 0
+        return bootstrap.run()
     except InstallError as exc:
         print(f"ÉCHEC — prérequis: {exc}", file=sys.stderr)
         return 1

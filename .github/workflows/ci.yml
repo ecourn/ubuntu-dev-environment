@@ -1,0 +1,108 @@
+name: Static checks
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    # ubuntu-26.04 is not in this matrix until GitHub provides a hosted runner.
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, ubuntu-24.04]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Check out source
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Install checksum-verified static tools
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/static-tools"
+          cd "$RUNNER_TEMP/static-tools"
+          curl --fail --location --retry 3 --proto '=https' --tlsv1.2 \
+            --output shellcheck.tar.xz \
+            https://github.com/koalaman/shellcheck/releases/download/v0.10.0/shellcheck-v0.10.0.linux.x86_64.tar.xz
+          printf '%s  %s\n' '6c881ab0698e4e6ea235245f22832860544f17ba386442fe7e9d629f8cbedf87' shellcheck.tar.xz | sha256sum --check --status
+          tar -xJf shellcheck.tar.xz shellcheck-v0.10.0/shellcheck
+          install -m 0755 shellcheck-v0.10.0/shellcheck "$RUNNER_TEMP/static-tools/shellcheck"
+          curl --fail --location --retry 3 --proto '=https' --tlsv1.2 \
+            --output gitleaks.tar.gz \
+            https://github.com/gitleaks/gitleaks/releases/download/v8.24.3/gitleaks_8.24.3_linux_x64.tar.gz
+          printf '%s  %s\n' '9991e0b2903da4c8f6122b5c3186448b927a5da4deef1fe45271c3793f4ee29c' gitleaks.tar.gz | sha256sum --check --status
+          tar -xzf gitleaks.tar.gz gitleaks
+          chmod 0755 gitleaks
+          echo "$RUNNER_TEMP/static-tools" >> "$GITHUB_PATH"
+
+      - name: Python syntax and unit tests
+        run: |
+          python3 -m compileall -q 02-environnement-de-developpement
+          cd 02-environnement-de-developpement
+          python3 -m unittest discover -s tests -v
+
+      - name: Python lint and type checking
+        run: |
+          python3 -m venv "$RUNNER_TEMP/python-gates"
+          "$RUNNER_TEMP/python-gates/bin/python" -m pip install 'ruff==0.13.3' 'mypy==1.18.2'
+          "$RUNNER_TEMP/python-gates/bin/ruff" check --select E4,E7,E9,F 02-environnement-de-developpement
+          "$RUNNER_TEMP/python-gates/bin/mypy" --follow-imports=silent --ignore-missing-imports 02-environnement-de-developpement/install_dev_environment.py
+
+      - name: Markdown consistency and shell static checks
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import re
+          from pathlib import Path
+          from urllib.parse import unquote
+
+          docs = [Path('README.md'), Path('SECURITY.md'),
+                  Path('01-configuration-serveur/tuto-script-serveur-complet-3-en-1.md')]
+          for doc in docs:
+              text = doc.read_text(encoding='utf-8')
+              fences = [line for line in text.splitlines() if line.startswith('```')]
+              assert len(fences) % 2 == 0, f'{doc}: unclosed code fence'
+              for dest in re.findall(r'(?<!!)\[[^]]+\]\(([^)]+)\)', text):
+                  target = unquote(dest.split('#', 1)[0])
+                  if target and not re.match(r'^[a-z]+://', target):
+                      assert (doc.parent / target).exists(), f'{doc}: broken link {dest}'
+          PY
+          shopt -s globstar nullglob
+          scripts=(01-configuration-serveur/bin/**/*.sh)
+          test "${#scripts[@]}" -gt 0
+          for script in "${scripts[@]}"; do
+            bash -n "$script"
+            if [[ "$script" == */tests/* ]]; then
+              # Dynamic function extraction in this harness is opaque to ShellCheck.
+              shellcheck -s bash -S error "$script"
+            else
+              shellcheck -s bash "$script"
+            fi
+          done
+          for test_script in 01-configuration-serveur/bin/tests/test_*.sh; do
+            bash "$test_script"
+          done
+
+      - name: Secret scan of working tree
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Exact synthetic GPG subkey fingerprint in a unit test; retain all default rules.
+          cat > "$RUNNER_TEMP/gitleaks-ci.toml" <<'TOML'
+          [extend]
+          useDefault = true
+          [allowlist]
+          description = "Synthetic GPG subkey fingerprint fixture only"
+          regexes = ['''^7F38BBB59D064DBCB3D84D725612B36462313325$''']
+          TOML
+          gitleaks dir . --no-banner --redact --config "$RUNNER_TEMP/gitleaks-ci.toml"
+
+# CI never runs the installers, systemctl, apt mutations, SSH changes, or UFW.
