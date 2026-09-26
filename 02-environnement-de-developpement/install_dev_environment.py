@@ -799,10 +799,14 @@ class UbuntuBootstrap:
                 timeout=timeout,
                 check=False,
             )
-        except (OSError, subprocess.TimeoutExpired) as exc:
-            if isinstance(exc, subprocess.TimeoutExpired):
-                raise InstallError(f"{label or self.step}: délai dépassé.") from exc
-            raise InstallError(f"{label or self.step}: commande impossible à lancer.") from exc
+        except subprocess.TimeoutExpired as exc:
+            raise InstallError(f"{label or self.step}: délai dépassé.") from exc
+        except OSError as exc:
+            detail = exc.strerror or str(exc)
+            raise InstallError(
+                f"{label or self.step}: commande impossible à lancer "
+                f"({exc.__class__.__name__}, errno={exc.errno}: {detail})."
+            ) from exc
         if check and result.returncode != 0:
             detail = ""
             if capture:
@@ -1323,17 +1327,50 @@ class UbuntuBootstrap:
                 temporary.unlink(missing_ok=True)
             raise InstallError(f"Impossible d'installer le fichier système {path}.") from exc
 
+    @contextlib.contextmanager
+    def _isolated_gpg_environment(self):
+        # Provide GnuPG with an isolated, private home directory.
+        with tempfile.TemporaryDirectory(prefix="dev-bootstrap-gpg-") as gnupg_home:
+            os.chmod(gnupg_home, 0o700)
+            env = self._privileged_env()
+            env["HOME"] = gnupg_home
+            env["GNUPGHOME"] = gnupg_home
+            yield gnupg_home, env
+
     def _gpg_fingerprints(self, key_data: bytes) -> set[str]:
         try:
-            result = subprocess.run(
-                [self._system_executable("gpg"), "--no-options", "--show-keys", "--with-colons", "--fingerprint", "-"],
-                input=key_data, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
-                env=self._privileged_env(),
-            )
+            with self._isolated_gpg_environment() as (gnupg_home, env):
+                result = subprocess.run(
+                    [
+                        self._system_executable("gpg"),
+                        "--no-options",
+                        "--batch",
+                        "--no-tty",
+                        "--homedir",
+                        gnupg_home,
+                        "--show-keys",
+                        "--with-colons",
+                        "--fingerprint",
+                        "-",
+                    ],
+                    input=key_data,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    check=False,
+                    env=env,
+                )
         except OSError as exc:
-            raise InstallError("Impossible de lancer gpg pour vérifier une clé APT.") from exc
+            raise InstallError(
+                "Impossible de lancer gpg pour vérifier une clé APT."
+            ) from exc
+
         if result.returncode != 0:
-            raise InstallError("Une clé APT téléchargée est invalide ou illisible par gpg.")
+            detail = result.stderr.decode("utf-8", errors="replace").strip()
+            raise InstallError(
+                "Une clé APT téléchargée est invalide ou illisible par gpg."
+                + (f" Détail : {detail}" if detail else "")
+            )
+
         fingerprints: set[str] = set()
         primary = False
         for line in result.stdout.decode("utf-8", errors="replace").splitlines():
@@ -1345,6 +1382,7 @@ class UbuntuBootstrap:
                     raise InstallError("Empreinte primaire APT invalide.")
                 fingerprints.add(fields[9].upper())
                 primary = False
+
         if not fingerprints:
             raise InstallError("Aucune empreinte n'a été trouvée dans une clé APT.")
         return fingerprints
@@ -1361,13 +1399,36 @@ class UbuntuBootstrap:
         if not trusted or not fingerprints or not fingerprints.issubset(trusted):
             raise InstallError(f"Empreinte primaire inconnue dans la clé APT {name} (trust v1).")
         if dearmor:
-            result = subprocess.run(
-                [self._system_executable("gpg"), "--no-options", "--dearmor", "--batch"], input=raw,
-                stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
-                env=self._privileged_env(),
-            )
+            try:
+                with self._isolated_gpg_environment() as (gnupg_home, env):
+                    result = subprocess.run(
+                        [
+                            self._system_executable("gpg"),
+                            "--no-options",
+                            "--batch",
+                            "--no-tty",
+                            "--homedir",
+                            gnupg_home,
+                            "--dearmor",
+                        ],
+                        input=raw,
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE,
+                        check=False,
+                        env=env,
+                    )
+            except OSError as exc:
+                raise InstallError(
+                    f"Impossible de lancer gpg pour convertir la clé APT {name}."
+                ) from exc
+
             if result.returncode != 0 or not result.stdout:
-                raise InstallError(f"La clé APT {name} n'a pas pu être convertie au format binaire.")
+                detail = result.stderr.decode("utf-8", errors="replace").strip()
+                raise InstallError(
+                    f"La clé APT {name} n'a pas pu être convertie au format binaire."
+                    + (f" Détail : {detail}" if detail else "")
+                )
+
             key_data = result.stdout
             key_path = Path("/etc/apt/keyrings/dev-bootstrap-nodesource.gpg")
         elif name == "docker":
@@ -1798,7 +1859,7 @@ class UbuntuBootstrap:
             raise InstallError("Inventaire npm en attente invalide.")
         pending_packages = pending.get("packages", {})
         pending_bins = pending.get("bins", {})
-        if set(pending_packages) - {"npm", "pnpm"} or set(pending_bins) - {"npm", "pnpm", "npx", "pnpx"}:
+        if set(pending_packages) - {"npm", "pnpm"} or set(pending_bins) - {"npm", "pnpm", "npx", "pnpx", "pn", "pnx"}:
             raise InstallError("Entrée npm en attente inattendue.")
         for name in ("npm", "pnpm"):
             package = self.prefix / "lib" / "node_modules" / name
@@ -1815,7 +1876,7 @@ class UbuntuBootstrap:
             for name, record in pending_bins.items():
                 if not isinstance(record, dict) or record != self._npm_binary_snapshot(name):
                     raise InstallError(f"Binaire npm {name} en attente modifié; refus d'écraser.")
-            for name in ("npx", "pnpx"):
+            for name in ("npx", "pnpx", "pn", "pnx"):
                 if name in self.manifest.get("tools", {}) and name not in pending_bins:
                     record = self.manifest["tools"][name]
                     if not isinstance(record, dict) or record != self._npm_binary_snapshot(name):
@@ -1840,7 +1901,7 @@ class UbuntuBootstrap:
             package = self.prefix / "lib/node_modules" / name
             if package.exists() or package.is_symlink():
                 packages[name] = self._npm_package_snapshot(name)
-        for name in ("npm", "pnpm", "npx", "pnpx"):
+        for name in ("npm", "pnpm", "npx", "pnpx", "pn", "pnx"):
             binary = self.bin_dir / name
             if binary.exists() or binary.is_symlink():
                 bins[name] = self._npm_binary_snapshot(name)
@@ -1861,8 +1922,11 @@ class UbuntuBootstrap:
             pending_name = (name in self.manifest.get("pending_npm", {}).get("packages", {})
                             or name in self.manifest.get("pending_npm", {}).get("bins", {}))
             managed = False if pending_name else self._package_binary_is_managed(name)
-            current = self._tool_version(name)
-            previously_present[name] = managed or current is not None
+            # A pending npm installation may contain a deliberately incomplete executable
+            # (notably pnpm's preinstall placeholder). Do not execute it before the recovery
+            # path has had a chance to reinstall/rebuild the package.
+            current = None if pending_name else self._tool_version(name)
+            previously_present[name] = managed or current is not None or pending_name
             if current == wanted and managed and not pending_name:
                 if name not in self.manifest.get("npm_packages", {}):
                     raise InstallError(f"Paquet npm {name} sans inventaire vérifié.")
@@ -1876,16 +1940,43 @@ class UbuntuBootstrap:
                     raise InstallError(f"Le binaire géré {name} ne correspond pas au manifeste.")
             outdated.append(f"{name}@{wanted}")
         if outdated:
+            npm_outdated = [item for item in outdated if item.split("@", 1)[0] != "pnpm"]
+            pnpm_outdated = [item for item in outdated if item.split("@", 1)[0] == "pnpm"]
             try:
-                self.user_command(
-                    [
-                        package_manager, "install", "--global", "--prefix", str(self.prefix),
-                        "--registry", NPM_REGISTRY,
-                        "--engine-strict", "--ignore-scripts", "--no-audit", "--no-fund", *outdated,
-                    ],
-                    label="installation des paquets npm globaux dans le préfixe utilisateur",
-                    timeout=900,
-                )
+                if npm_outdated:
+                    self.user_command(
+                        [
+                            package_manager, "install", "--global", "--prefix", str(self.prefix),
+                            "--registry", NPM_REGISTRY,
+                            "--engine-strict", "--ignore-scripts", "--no-audit", "--no-fund",
+                            *npm_outdated,
+                        ],
+                        label="installation de npm dans le préfixe utilisateur",
+                        timeout=900,
+                    )
+                if pnpm_outdated:
+                    self.user_command(
+                        [
+                            package_manager, "install", "--global", "--prefix", str(self.prefix),
+                            "--registry", NPM_REGISTRY,
+                            "--engine-strict", "--allow-scripts=pnpm", "--strict-allow-scripts",
+                            "--no-audit", "--no-fund",
+                            *pnpm_outdated,
+                        ],
+                        label="installation de pnpm dans le préfixe utilisateur",
+                        timeout=900,
+                    )
+                    # npm can consider an already-present pending pnpm version up to date and
+                    # skip its lifecycle hook. Rebuild explicitly so pnpm's preinstall replaces
+                    # the JavaScript placeholder with the platform-native executable.
+                    self.user_command(
+                        [
+                            package_manager, "rebuild", "--global", "--prefix", str(self.prefix),
+                            "--allow-scripts=pnpm", "--strict-allow-scripts", "pnpm",
+                        ],
+                        label="finalisation du binaire natif pnpm",
+                        timeout=900,
+                    )
             except (InstallError, KeyboardInterrupt):
                 self._record_failed_npm_install()
                 raise
@@ -1905,7 +1996,7 @@ class UbuntuBootstrap:
                     self.manifest.setdefault("npm_packages", {})[name] = self._npm_package_snapshot(name)
                     self.status[name] = "mis à jour" if previously_present[name] else "installé"
                     self.verified_versions[name.capitalize()] = wanted
-                for name in ("npx", "pnpx"):
+                for name in ("npx", "pnpx", "pn", "pnx"):
                     binary = self.bin_dir / name
                     if binary.exists() or binary.is_symlink():
                         self.manifest.setdefault("tools", {})[name] = self._npm_binary_snapshot(name)
