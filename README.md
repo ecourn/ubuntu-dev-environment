@@ -53,7 +53,7 @@ Depuis le compte `ubuntu`, lancez l’installateur sans `sudo` :
 python3 ~/ubuntu-dev-environment/03-environnement-de-developpement/install_dev_environment.py
 ```
 
-Il vérifie les prérequis, puis installe les outils de développement documentés dans le [README de cette étape](03-environnement-de-developpement/README.md).
+Il vérifie les prérequis, puis installe les outils de développement documentés dans le [README de cette étape](03-environnement-de-developpement/README.md). L’étape se termine par la configuration interactive de l’identité Git et de GitHub CLI; lancez-la depuis un terminal.
 
 ## À savoir
 

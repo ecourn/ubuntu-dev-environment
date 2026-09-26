@@ -703,9 +703,8 @@ class UbuntuBootstrap:
     MANAGED_END = "# <<< dev-bootstrap managed <<<"
     SYSTEM_PATH = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 
-    def __init__(self, dry_run: bool = False, github_auth: bool = False):
+    def __init__(self, dry_run: bool = False):
         self.dry_run = dry_run
-        self.github_auth_requested = github_auth
         self.target = resolve_target_user(
             os.geteuid(), os.getuid(), os.environ, pwd.getpwnam, pwd.getpwuid
         )
@@ -1209,6 +1208,14 @@ class UbuntuBootstrap:
         probe_https_url(f"{gh_repo}/main/binary-{self.arch}/Packages.gz")
 
     def preflight(self) -> None:
+        if not self.dry_run:
+            self._check_tty()
+            if not self.auth_tty_available:
+                raise InstallError(
+                    "L'installation standard requiert un terminal interactif pour configurer Git et GitHub CLI."
+                )
+            if not shutil.which("git", path=self.target_path):
+                raise InstallError("Git est introuvable pour le compte utilisateur cible.")
         self.validate_environment()
         self.resolve_official_plan()
         self._check_node_manager_conflicts()
@@ -1216,10 +1223,6 @@ class UbuntuBootstrap:
         self._check_apt_source_conflicts()
         self._check_npm_prefix()
         self.gh_authenticated = self._gh_is_authenticated()
-        if not self.dry_run and not self.gh_authenticated and self.github_auth_requested:
-            self._check_tty()
-            if not self.auth_tty_available:
-                raise InstallError("--github-auth requiert un terminal sûr avant toute modification.")
         if not self.dry_run and os.geteuid() != 0:
             self.set_step("validation de sudo avant toute modification")
             result = subprocess.run(
@@ -1239,8 +1242,7 @@ class UbuntuBootstrap:
         print("  Docker: dernière version stable publiée dans le dépôt APT officiel Docker")
         print("  Docker Compose: dernière version stable publiée dans le dépôt APT officiel Docker")
         print(f"  Ubuntu: {self.version_id} ({self.codename}), architecture {self.arch}")
-        if not self.gh_authenticated:
-            print("  GitHub: authentification facultative (--github-auth pour demander un token masqué)")
+        print("  Git/GitHub CLI: configuration interactive après installation (aucune question en mode à blanc)")
 
     @staticmethod
     def _check_root_directory(path: Path) -> None:
@@ -2066,40 +2068,157 @@ class UbuntuBootstrap:
             self.status["shell"] = "déjà conforme"
         self._verify_shell_configuration()
 
-    def _read_token_masked(self) -> str:
+    def _write_tty(self, message: str) -> None:
         try:
             fd = os.open("/dev/tty", os.O_RDWR | os.O_NOCTTY)
         except OSError as exc:
-            raise InstallError("Impossible d'ouvrir un terminal sûr pour lire le token GitHub.") from exc
+            raise InstallError("Impossible d'écrire dans le terminal interactif.") from exc
         try:
-            original = termios.tcgetattr(fd)
-            hidden = list(original)
-            hidden[3] &= ~termios.ECHO
-            os.write(fd, b"Token GitHub (saisie masquee): ")
-            termios.tcsetattr(fd, termios.TCSAFLUSH, hidden)
-            try:
-                with os.fdopen(os.dup(fd), "r", encoding="utf-8", errors="strict") as stream:
-                    token = stream.readline().rstrip("\r\n")
-            finally:
-                termios.tcsetattr(fd, termios.TCSAFLUSH, original)
-                os.write(fd, b"\n")
+            os.write(fd, message.encode("utf-8"))
         finally:
             os.close(fd)
-        if not token.strip():
-            raise InstallError("Token GitHub vide; authentification non effectuée.")
-        return token
+
+    def _read_tty_line(self, prompt: str, *, hidden: bool = False) -> str:
+        try:
+            fd = os.open("/dev/tty", os.O_RDWR | os.O_NOCTTY)
+        except OSError as exc:
+            raise InstallError("Impossible d'ouvrir un terminal sûr pour lire la saisie.") from exc
+
+        original = None
+        hidden_enabled = False
+        try:
+            if not os.isatty(fd):
+                raise InstallError("Le terminal de saisie n'est pas interactif.")
+            original = termios.tcgetattr(fd)
+            if hidden:
+                hidden_attributes = list(original)
+                hidden_attributes[3] &= ~termios.ECHO
+                termios.tcsetattr(fd, termios.TCSAFLUSH, hidden_attributes)
+                hidden_enabled = True
+            os.write(fd, prompt.encode("utf-8"))
+            with os.fdopen(os.dup(fd), "r", encoding="utf-8", errors="strict") as stream:
+                value = stream.readline()
+            if value == "":
+                raise InstallError("La lecture du terminal a été interrompue.")
+            return value.rstrip("\r\n")
+        finally:
+            try:
+                if hidden_enabled and original is not None:
+                    termios.tcsetattr(fd, termios.TCSAFLUSH, original)
+                    os.write(fd, b"\n")
+            finally:
+                os.close(fd)
+
+    def _prompt_value(self, label: str, current_value: str = "") -> str:
+        while True:
+            if current_value:
+                prompt = f"{label} [{current_value}] (Entrée pour conserver) : "
+            else:
+                prompt = f"{label} : "
+            value = self._read_tty_line(prompt).strip()
+            if not value and current_value:
+                return current_value
+            if value:
+                return value
+            self._write_tty("La valeur ne peut pas être vide.\n")
+
+    @staticmethod
+    def _valid_git_email(email: str) -> bool:
+        if email.count("@") != 1 or any(character.isspace() for character in email):
+            return False
+        local_part, domain = email.rsplit("@", 1)
+        if (not local_part or not domain or local_part.startswith(".")
+                or local_part.endswith(".") or ".." in local_part):
+            return False
+        if any(not (character.isalnum() or character in "_%+.-") for character in local_part):
+            return False
+        return re.fullmatch(
+            r"[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?"
+            r"(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?)+",
+            domain,
+        ) is not None
+
+    def _prompt_git_email(self, current_value: str = "") -> str:
+        while True:
+            value = self._prompt_value("Adresse e-mail Git", current_value)
+            if self._valid_git_email(value):
+                return value
+            self._write_tty("Adresse e-mail invalide. Exemple attendu : nom@example.com\n")
+            current_value = ""
+
+    def _git_global_value(self, key: str) -> str:
+        result = self.user_command(
+            ["git", "config", "--global", "--get", key],
+            capture=True, check=False, timeout=20, label=f"lecture de la configuration Git {key}",
+        )
+        if result.returncode == 1:
+            return ""
+        if result.returncode != 0:
+            raise InstallError(f"Impossible de lire la configuration Git globale {key}.")
+        return result.stdout.rstrip("\n")
+
+    def _configure_git(self) -> None:
+        self.set_step("configuration interactive de Git")
+        current_name = self._git_global_value("user.name")
+        current_email = self._git_global_value("user.email")
+        git_name = self._prompt_value("Nom ou pseudo Git", current_name)
+        git_email = self._prompt_git_email(current_email)
+
+        values = {
+            "user.name": git_name,
+            "user.email": git_email,
+            "init.defaultBranch": "main",
+        }
+        for key, value in values.items():
+            result = self.user_command(
+                ["git", "config", "--global", "--replace-all", key, value],
+                capture=True, check=False, timeout=20,
+                label=f"configuration Git {key}",
+            )
+            if result.returncode != 0:
+                raise InstallError(f"Impossible de configurer la valeur Git globale {key}.")
+
+        for key, expected in values.items():
+            if self._git_global_value(key) != expected:
+                raise InstallError(f"La vérification de la configuration Git {key} a échoué.")
+
+        self.git_config = {
+            "name": git_name,
+            "email": git_email,
+            "default_branch": "main",
+        }
+        self.status["git"] = "configuré"
+
+    def _ask_yes_no(self, prompt: str, *, default: bool = False) -> bool:
+        while True:
+            suffix = " [O/n] : " if default else " [o/N] : "
+            answer = self._read_tty_line(prompt + suffix).strip().casefold()
+            if not answer:
+                return default
+            if answer in {"o", "oui", "y", "yes"}:
+                return True
+            if answer in {"n", "non", "no"}:
+                return False
+            self._write_tty("Répondez par oui ou non.\n")
+
+    def _read_token_masked(self) -> str:
+        while True:
+            token = self._read_tty_line("Personal Access Token GitHub classique (saisie masquée) : ", hidden=True)
+            if token.strip():
+                return token
+            self._write_tty("Le token ne peut pas être vide.\n")
 
     def _authenticate_github(self) -> None:
         self.set_step("vérification puis authentification GitHub CLI")
         if self._gh_is_authenticated():
             self.gh_authenticated = True
-            self.status["gh_auth"] = "déjà authentifié"
-            return
-        if not getattr(self, "github_auth_requested", False):
-            self.status["gh_auth"] = "ignorée"
-            return
-        if not self.auth_tty_available:
-            raise InstallError("--github-auth requiert un terminal sûr.")
+            self._write_tty("GitHub CLI possède déjà une authentification valide pour github.com.\n")
+            if not self._ask_yes_no("Effectuer une nouvelle authentification ?", default=False):
+                self.status["gh_auth"] = "déjà authentifié"
+                return
+        else:
+            self._write_tty("Aucune authentification GitHub valide n'a été confirmée pour github.com.\n")
+
         token = self._read_token_masked()
         try:
             result = self.user_command(
@@ -2162,6 +2281,14 @@ class UbuntuBootstrap:
         )
         if self.gh_authenticated and not self._gh_is_authenticated():
             raise InstallError("L'authentification GitHub ne passe pas la vérification gh auth status.")
+        expected_git_config = self.git_config
+        for key, expected in (
+            ("user.name", expected_git_config["name"]),
+            ("user.email", expected_git_config["email"]),
+            ("init.defaultBranch", expected_git_config["default_branch"]),
+        ):
+            if self._git_global_value(key) != expected:
+                raise InstallError(f"La configuration Git globale {key} a changé avant la vérification finale.")
         active = self.system_command(
             ["systemctl", "is-active", "--quiet", "docker.service"],
             capture=True, check=False, label="état final du service Docker",
@@ -2187,6 +2314,9 @@ class UbuntuBootstrap:
             version = self.verified_versions.get(label, "version non relevée")
             status = self.status.get(key, self.status.get(label.lower(), "vérifié"))
             print(f"  {label}: {version} — {status}")
+        print(f"  Git name: {self.git_config['name']}")
+        print(f"  Git e-mail: {self.git_config['email']}")
+        print(f"  Git branche par défaut: {self.git_config['default_branch']}")
         print(f"  Docker service: actif; authentification GitHub: {self.status.get('gh_auth', 'vérifiée')}")
         print(f"  Shell {Path(self.target.shell).name}: {self.status.get('shell', 'configuré')}")
         print("  Ouvrez un nouveau shell pour charger zoxide, fzf et le PATH utilisateur.")
@@ -2203,11 +2333,12 @@ class UbuntuBootstrap:
                 self.download_verified_artifacts()
                 self._install_sources()
                 self._install_apt_packages()
-                self._authenticate_github()
                 self._ensure_docker_service()
                 self._install_release_tools()
                 self._configure_npm_tools()
                 self._configure_shell()
+                self._configure_git()
+                self._authenticate_github()
                 self.verify_final_state()
                 self.print_report()
             return 0
@@ -2231,13 +2362,12 @@ def main(argv: list[str] | None = None) -> int:
         help="Résout les releases amont et valide les sources sans modification ; candidats APT non résolus (pas de --plan).",
     )
     parser.add_argument("--uninstall", action="store_true", help="Retire les binaires utilisateur vérifiés (conserve APT et npm).")
-    parser.add_argument("--github-auth", action="store_true", help="Authentification GitHub facultative avec token masqué.")
     args = parser.parse_args(argv)
     try:
         if sys.version_info < (3, 10):
             detected = ".".join(str(part) for part in sys.version_info[:3])
             raise InstallError(f"Python 3.10 ou supérieur est requis; version détectée : {detected}.")
-        bootstrap = UbuntuBootstrap(dry_run=args.dry_run, github_auth=args.github_auth)
+        bootstrap = UbuntuBootstrap(dry_run=args.dry_run)
         if args.uninstall:
             bootstrap.uninstall()
             return 0
@@ -2249,8 +2379,6 @@ def main(argv: list[str] | None = None) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-
-
 
 
 

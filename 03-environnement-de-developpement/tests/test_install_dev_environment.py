@@ -13,7 +13,7 @@ from contextlib import redirect_stdout
 from email.message import Message
 from io import StringIO
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, call, patch
 
 import install_dev_environment
 from install_dev_environment import (
@@ -256,7 +256,8 @@ class BootstrapSafetyTests(unittest.TestCase):
     def test_preflight_checks_sudo_noninteractively_before_install(self):
         bootstrap = UbuntuBootstrap.__new__(UbuntuBootstrap)
         bootstrap.dry_run = False
-        bootstrap.github_auth_requested = False
+        bootstrap.target_path = "/usr/bin"
+        bootstrap._check_tty = lambda: setattr(bootstrap, "auth_tty_available", True)
         bootstrap.validate_environment = MagicMock()
         bootstrap.resolve_official_plan = MagicMock()
         bootstrap._check_node_manager_conflicts = MagicMock()
@@ -270,6 +271,7 @@ class BootstrapSafetyTests(unittest.TestCase):
         result = subprocess.CompletedProcess(["sudo", "-n", "true"], 0)
 
         with patch("install_dev_environment.os.geteuid", return_value=1000), \
+             patch("install_dev_environment.shutil.which", return_value="/usr/bin/git"), \
              patch("install_dev_environment.subprocess.run", return_value=result) as run:
             bootstrap.preflight()
 
@@ -279,7 +281,8 @@ class BootstrapSafetyTests(unittest.TestCase):
     def test_preflight_stops_when_noninteractive_sudo_is_unavailable(self):
         bootstrap = UbuntuBootstrap.__new__(UbuntuBootstrap)
         bootstrap.dry_run = False
-        bootstrap.github_auth_requested = False
+        bootstrap.target_path = "/usr/bin"
+        bootstrap._check_tty = lambda: setattr(bootstrap, "auth_tty_available", True)
         bootstrap.validate_environment = MagicMock()
         bootstrap.resolve_official_plan = MagicMock()
         bootstrap._check_node_manager_conflicts = MagicMock()
@@ -293,11 +296,23 @@ class BootstrapSafetyTests(unittest.TestCase):
         result = subprocess.CompletedProcess(["sudo", "-n", "true"], 1)
 
         with patch("install_dev_environment.os.geteuid", return_value=1000), \
+             patch("install_dev_environment.shutil.which", return_value="/usr/bin/git"), \
              patch("install_dev_environment.subprocess.run", return_value=result) as run, \
              self.assertRaisesRegex(InstallError, "sudo non interactif"):
             bootstrap.preflight()
 
         self.assertEqual(run.call_args.args[0], ["/usr/bin/sudo", "-n", "true"])
+
+    def test_preflight_requires_terminal_before_any_install_work(self):
+        bootstrap = UbuntuBootstrap.__new__(UbuntuBootstrap)
+        bootstrap.dry_run = False
+        bootstrap._check_tty = lambda: setattr(bootstrap, "auth_tty_available", False)
+        bootstrap.validate_environment = MagicMock()
+
+        with self.assertRaisesRegex(InstallError, "terminal interactif"):
+            bootstrap.preflight()
+
+        bootstrap.validate_environment.assert_not_called()
 
     def test_interruption_after_binary_publish_is_recoverable(self):
         for upgrade in (False, True):
@@ -493,17 +508,132 @@ class BootstrapSafetyTests(unittest.TestCase):
             bootstrap.uninstall()
             self.assertFalse((home / ".local").exists())
 
-    def test_unauthenticated_github_skips_prompt_by_default_even_with_tty(self):
+    def test_existing_github_auth_is_preserved_by_default(self):
+        bootstrap = UbuntuBootstrap.__new__(UbuntuBootstrap)
+        bootstrap.set_step = lambda message: None
+        bootstrap.status = {}
+        bootstrap.gh_authenticated = True
+        bootstrap.auth_tty_available = True
+        bootstrap._gh_is_authenticated = lambda: True
+        bootstrap._write_tty = MagicMock()
+        bootstrap._ask_yes_no = MagicMock(return_value=False)
+        with patch.object(bootstrap, "_read_token_masked", side_effect=AssertionError("unexpected prompt")):
+            bootstrap._authenticate_github()
+        self.assertEqual(bootstrap.status["gh_auth"], "déjà authentifié")
+        bootstrap._ask_yes_no.assert_called_once_with(
+            "Effectuer une nouvelle authentification ?", default=False
+        )
+
+    def test_unauthenticated_github_reads_token_from_stdin_not_process_arguments(self):
         bootstrap = UbuntuBootstrap.__new__(UbuntuBootstrap)
         bootstrap.set_step = lambda message: None
         bootstrap.status = {}
         bootstrap.gh_authenticated = False
         bootstrap.auth_tty_available = True
-        bootstrap.github_auth_requested = False
-        bootstrap._gh_is_authenticated = lambda: False
-        with patch.object(bootstrap, "_read_token_masked", side_effect=AssertionError("unexpected prompt")):
-            bootstrap._authenticate_github()
-        self.assertEqual(bootstrap.status["gh_auth"], "ignorée")
+        bootstrap._write_tty = MagicMock()
+        bootstrap._gh_is_authenticated = MagicMock(side_effect=[False, True])
+        bootstrap._read_token_masked = MagicMock(return_value="ghp-example-secret")
+        calls = []
+
+        def user_command(command, **kwargs):
+            calls.append((command, kwargs))
+            return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+
+        bootstrap.user_command = user_command
+        bootstrap._authenticate_github()
+
+        self.assertEqual(bootstrap.status["gh_auth"], "authentifié")
+        self.assertEqual(len(calls), 1)
+        command, options = calls[0]
+        self.assertEqual(command, ["gh", "auth", "login", "--hostname", "github.com", "--with-token"])
+        self.assertNotIn("ghp-example-secret", command)
+        self.assertEqual(options["input_data"], "ghp-example-secret\n")
+
+    def test_token_prompt_retries_after_empty_input(self):
+        bootstrap = UbuntuBootstrap.__new__(UbuntuBootstrap)
+        bootstrap._read_tty_line = MagicMock(side_effect=["  ", "ghp-example-secret"])
+        bootstrap._write_tty = MagicMock()
+
+        token = bootstrap._read_token_masked()
+
+        self.assertEqual(token, "ghp-example-secret")
+        self.assertEqual(bootstrap._read_tty_line.call_count, 2)
+        self.assertTrue(all(call.kwargs["hidden"] for call in bootstrap._read_tty_line.call_args_list))
+
+    def test_git_email_validation_rejects_malformed_addresses(self):
+        for email in ("", "no-at-sign", "name@localhost", ".name@example.com", "name..x@example.com",
+                      "name@-example.com", "name@example-.com", "name @example.com"):
+            with self.subTest(email=email):
+                self.assertFalse(UbuntuBootstrap._valid_git_email(email))
+        for email in ("name@example.com", "first.last+git@example.co.uk", "élise@example.fr"):
+            with self.subTest(email=email):
+                self.assertTrue(UbuntuBootstrap._valid_git_email(email))
+
+    def test_git_configuration_preserves_existing_identity_and_sets_main_branch(self):
+        bootstrap = UbuntuBootstrap.__new__(UbuntuBootstrap)
+        bootstrap.set_step = lambda message: None
+        bootstrap.status = {}
+        values = {
+            "user.name": "Existing Name",
+            "user.email": "existing@example.com",
+            "init.defaultBranch": "develop",
+        }
+
+        def user_command(command, **kwargs):
+            key = command[-1] if "--get" in command else command[-2]
+            if "--get" in command:
+                if key not in values:
+                    return subprocess.CompletedProcess(command, 1, stdout="", stderr="")
+                return subprocess.CompletedProcess(command, 0, stdout=values[key] + "\n", stderr="")
+            values[key] = command[-1]
+            return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+
+        bootstrap.user_command = user_command
+        bootstrap._prompt_value = MagicMock(side_effect=lambda _label, current="": current)
+
+        bootstrap._configure_git()
+
+        self.assertEqual(values, {
+            "user.name": "Existing Name",
+            "user.email": "existing@example.com",
+            "init.defaultBranch": "main",
+        })
+        self.assertEqual(bootstrap.git_config, {
+            "name": "Existing Name",
+            "email": "existing@example.com",
+            "default_branch": "main",
+        })
+        self.assertEqual(bootstrap.status["git"], "configuré")
+
+    def test_git_configuration_prompts_when_identity_is_missing(self):
+        bootstrap = UbuntuBootstrap.__new__(UbuntuBootstrap)
+        bootstrap.set_step = lambda message: None
+        bootstrap.status = {}
+        values = {}
+
+        def user_command(command, **kwargs):
+            key = command[-1] if "--get" in command else command[-2]
+            if "--get" in command:
+                if key not in values:
+                    return subprocess.CompletedProcess(command, 1, stdout="", stderr="")
+                return subprocess.CompletedProcess(command, 0, stdout=values[key] + "\n", stderr="")
+            values[key] = command[-1]
+            return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+
+        bootstrap.user_command = user_command
+        bootstrap._prompt_value = MagicMock(side_effect=["Ada Lovelace", "ada@example.com"])
+
+        bootstrap._configure_git()
+
+        self.assertEqual(values, {
+            "user.name": "Ada Lovelace",
+            "user.email": "ada@example.com",
+            "init.defaultBranch": "main",
+        })
+        self.assertEqual(bootstrap._prompt_value.call_args_list, [
+            call("Nom ou pseudo Git", ""),
+            call("Adresse e-mail Git", ""),
+        ])
 
     def test_dry_run_plan_discloses_apt_version_is_not_yet_resolved(self):
         bootstrap = UbuntuBootstrap.__new__(UbuntuBootstrap)
@@ -664,18 +794,6 @@ class BootstrapSafetyTests(unittest.TestCase):
                 self.assertEqual(events[:3], [("groups", []), ("gid", 1002), ("uid", 1001)])
         self.assertEqual(events[-3:], [("uid", 0), ("gid", 0), ("groups", [0, 27])])
 
-    def test_missing_tty_does_not_abort_optional_github_auth(self):
-        bootstrap = UbuntuBootstrap.__new__(UbuntuBootstrap)
-        bootstrap.set_step = lambda message: None
-        bootstrap.status = {}
-        bootstrap.gh_authenticated = False
-        bootstrap.auth_tty_available = False
-        bootstrap._gh_is_authenticated = lambda: False
-        with patch.object(bootstrap, "_check_tty", side_effect=AssertionError("unexpected tty")), \
-             patch.object(bootstrap, "_read_token_masked", side_effect=AssertionError("unexpected token")):
-            bootstrap._authenticate_github()
-        self.assertEqual(bootstrap.status["gh_auth"], "ignorée")
-
     def test_existing_user_directory_permissions_are_preserved(self):
         with tempfile.TemporaryDirectory() as temporary:
             home = os.path.join(temporary, "home")
@@ -695,6 +813,11 @@ class BootstrapSafetyTests(unittest.TestCase):
         bootstrap.target = TargetUser("tester", os.getuid(), os.getgid(), "/tmp", "/bin/bash")
         bootstrap.verified_versions = {"Docker Engine": "29.0.1", "Docker Compose": "5.0.0"}
         bootstrap.status = {}
+        bootstrap.git_config = {
+            "name": "Test User",
+            "email": "test@example.com",
+            "default_branch": "main",
+        }
 
         output = StringIO()
         with redirect_stdout(output):
