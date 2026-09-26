@@ -253,6 +253,52 @@ class ShellConfigurationTests(unittest.TestCase):
 
 
 class BootstrapSafetyTests(unittest.TestCase):
+    def test_preflight_checks_sudo_noninteractively_before_install(self):
+        bootstrap = UbuntuBootstrap.__new__(UbuntuBootstrap)
+        bootstrap.dry_run = False
+        bootstrap.github_auth_requested = False
+        bootstrap.validate_environment = MagicMock()
+        bootstrap.resolve_official_plan = MagicMock()
+        bootstrap._check_node_manager_conflicts = MagicMock()
+        bootstrap._check_docker_conflicts = MagicMock()
+        bootstrap._check_apt_source_conflicts = MagicMock()
+        bootstrap._check_npm_prefix = MagicMock()
+        bootstrap._gh_is_authenticated = lambda: False
+        bootstrap._system_executable = lambda name: f"/usr/bin/{name}"
+        bootstrap._privileged_env = lambda: {"PATH": "/usr/bin"}
+        bootstrap.set_step = MagicMock()
+        result = subprocess.CompletedProcess(["sudo", "-n", "true"], 0)
+
+        with patch("install_dev_environment.os.geteuid", return_value=1000), \
+             patch("install_dev_environment.subprocess.run", return_value=result) as run:
+            bootstrap.preflight()
+
+        self.assertEqual(run.call_args.args[0], ["/usr/bin/sudo", "-n", "true"])
+        self.assertEqual(run.call_args.kwargs["env"], {"PATH": "/usr/bin"})
+
+    def test_preflight_stops_when_noninteractive_sudo_is_unavailable(self):
+        bootstrap = UbuntuBootstrap.__new__(UbuntuBootstrap)
+        bootstrap.dry_run = False
+        bootstrap.github_auth_requested = False
+        bootstrap.validate_environment = MagicMock()
+        bootstrap.resolve_official_plan = MagicMock()
+        bootstrap._check_node_manager_conflicts = MagicMock()
+        bootstrap._check_docker_conflicts = MagicMock()
+        bootstrap._check_apt_source_conflicts = MagicMock()
+        bootstrap._check_npm_prefix = MagicMock()
+        bootstrap._gh_is_authenticated = lambda: False
+        bootstrap._system_executable = lambda name: f"/usr/bin/{name}"
+        bootstrap._privileged_env = lambda: {"PATH": "/usr/bin"}
+        bootstrap.set_step = MagicMock()
+        result = subprocess.CompletedProcess(["sudo", "-n", "true"], 1)
+
+        with patch("install_dev_environment.os.geteuid", return_value=1000), \
+             patch("install_dev_environment.subprocess.run", return_value=result) as run, \
+             self.assertRaisesRegex(InstallError, "sudo non interactif"):
+            bootstrap.preflight()
+
+        self.assertEqual(run.call_args.args[0], ["/usr/bin/sudo", "-n", "true"])
+
     def test_interruption_after_binary_publish_is_recoverable(self):
         for upgrade in (False, True):
             with self.subTest(upgrade=upgrade), tempfile.TemporaryDirectory() as directory:
@@ -697,16 +743,19 @@ class NpmInstallTests(unittest.TestCase):
                 bootstrap._save_manifest()
             def install(command, **kwargs):
                 calls.append(command)
-                package_file.parent.mkdir(parents=True, exist_ok=True)
-                bootstrap.bin_dir.mkdir(exist_ok=True)
-                package_file.write_bytes(b"new package")
-                binary.write_bytes(b"new binary")
+                package_name = next(
+                    (name for name in ("npm", "pnpm")
+                     if any(argument.startswith(f"{name}@") for argument in command)),
+                    None,
+                )
+                if package_name:
+                    package = bootstrap.prefix / "lib/node_modules" / package_name
+                    package.mkdir(parents=True, exist_ok=True)
+                    (package / "package.json").write_bytes(b"new package")
+                    bootstrap.bin_dir.mkdir(exist_ok=True)
+                    (bootstrap.bin_dir / package_name).write_bytes(b"new binary")
                 if len(calls) == 1:
                     raise KeyboardInterrupt()
-                pnpm = bootstrap.prefix / "lib/node_modules/pnpm"
-                pnpm.mkdir()
-                (pnpm / "package.json").write_bytes(b"new package")
-                (bootstrap.bin_dir / "pnpm").write_bytes(b"new binary")
                 return subprocess.CompletedProcess(command, 0)
             bootstrap.user_command = install
             with patch("install_dev_environment.shutil.which", return_value="/usr/bin/npm"):
@@ -724,7 +773,7 @@ class NpmInstallTests(unittest.TestCase):
                 package_file.write_bytes(b"new package")
                 bootstrap.manifest = retry.manifest
                 bootstrap._configure_npm_tools()
-            self.assertEqual(len(calls), 2)
+            self.assertEqual(len(calls), 4)
             self.assertNotIn("pending_npm", bootstrap.manifest)
 
     def test_matching_untracked_npm_binary_is_not_declared_conforming(self):
@@ -745,19 +794,25 @@ class NpmInstallTests(unittest.TestCase):
             commands = []
             def install(command, **kwargs):
                 commands.append(command)
-                for name in ("npm", "pnpm"):
-                    package = bootstrap.prefix / "lib/node_modules" / name
+                package_name = next(
+                    (name for name in ("npm", "pnpm")
+                     if any(argument.startswith(f"{name}@") for argument in command)),
+                    None,
+                )
+                if package_name:
+                    package = bootstrap.prefix / "lib/node_modules" / package_name
                     package.mkdir(parents=True, exist_ok=True)
                     (package / "package.json").write_bytes(b"official")
                     bootstrap.bin_dir.mkdir(exist_ok=True)
-                    (bootstrap.bin_dir / name).write_bytes(b"binary")
+                    (bootstrap.bin_dir / package_name).write_bytes(b"binary")
                 return subprocess.CompletedProcess(command, 0)
             bootstrap.user_command = install
             with patch("install_dev_environment.shutil.which", return_value="/usr/bin/npm"):
                 bootstrap._configure_npm_tools()
-            self.assertEqual(len(commands), 1)
+            self.assertEqual(len(commands), 3)
             self.assertIn("npm@11.0.0", commands[0])
-            self.assertIn("pnpm@10.0.0", commands[0])
+            self.assertIn("pnpm@10.0.0", commands[1])
+            self.assertIn("rebuild", commands[2])
 
     def test_failed_global_install_tracks_partial_tree_for_safe_retry(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -777,15 +832,19 @@ class NpmInstallTests(unittest.TestCase):
             calls = []
             def install(command, **kwargs):
                 calls.append(command)
-                package = bootstrap.prefix / "lib/node_modules/npm"
-                package.mkdir(parents=True, exist_ok=True)
-                (package / "package.json").write_bytes(b"partial")
+                package_name = next(
+                    (name for name in ("npm", "pnpm")
+                     if any(argument.startswith(f"{name}@") for argument in command)),
+                    None,
+                )
+                if package_name:
+                    package = bootstrap.prefix / "lib/node_modules" / package_name
+                    package.mkdir(parents=True, exist_ok=True)
+                    (package / "package.json").write_bytes(b"partial")
+                    bootstrap.bin_dir.mkdir(exist_ok=True)
+                    (bootstrap.bin_dir / package_name).write_bytes(b"binary")
                 if len(calls) == 1:
                     raise InstallError("npm failed")
-                (bootstrap.prefix / "lib/node_modules/pnpm").mkdir()
-                bootstrap.bin_dir.mkdir(exist_ok=True)
-                for name in ("npm", "pnpm"):
-                    (bootstrap.bin_dir / name).write_bytes(b"binary")
                 return subprocess.CompletedProcess(command, 0)
             bootstrap.user_command = install
             with patch("install_dev_environment.shutil.which", return_value="/usr/bin/npm"):
@@ -793,7 +852,7 @@ class NpmInstallTests(unittest.TestCase):
                     bootstrap._configure_npm_tools()
                 bootstrap._check_npm_prefix()
                 bootstrap._configure_npm_tools()
-            self.assertEqual(len(calls), 2)
+            self.assertEqual(len(calls), 4)
             self.assertNotIn("pending_npm", bootstrap.manifest)
 
     def test_failed_npm_install_keeps_partial_unmodified_and_rejects_tampering(self):
@@ -839,9 +898,10 @@ class NpmInstallTests(unittest.TestCase):
             bootstrap._version_at_path = lambda path, label: "0.0.1"
             bootstrap._save_manifest = lambda: None
             def install(command, **kwargs):
-                package = bootstrap.prefix / "lib/node_modules/npm"
-                package.mkdir(parents=True)
-                (package / "package.json").write_bytes(b"partial")
+                if "npm@11.0.0" in command:
+                    package = bootstrap.prefix / "lib/node_modules/npm"
+                    package.mkdir(parents=True, exist_ok=True)
+                    (package / "package.json").write_bytes(b"partial")
                 return subprocess.CompletedProcess(command, 0)
             bootstrap.user_command = install
             with patch("install_dev_environment.shutil.which", return_value="/usr/bin/npm"), \
@@ -865,13 +925,19 @@ class NpmInstallTests(unittest.TestCase):
             bootstrap._version_at_path = lambda path, label: bootstrap.plan[label]
             bootstrap._save_manifest = lambda: None
             def install(command, **kwargs):
-                for name in ("npm", "pnpm"):
-                    package = bootstrap.prefix / "lib/node_modules" / name
-                    package.mkdir(parents=True)
+                package_name = next(
+                    (name for name in ("npm", "pnpm")
+                     if any(argument.startswith(f"{name}@") for argument in command)),
+                    None,
+                )
+                if package_name:
+                    package = bootstrap.prefix / "lib/node_modules" / package_name
+                    package.mkdir(parents=True, exist_ok=True)
                     (package / "package.json").write_bytes(b"binary")
-                bootstrap.bin_dir.mkdir()
-                for name in ("npm", "pnpm", "npx", "pnpx"):
-                    (bootstrap.bin_dir / name).write_bytes(b"binary")
+                    bootstrap.bin_dir.mkdir(exist_ok=True)
+                    (bootstrap.bin_dir / package_name).write_bytes(b"binary")
+                    auxiliary = "npx" if package_name == "npm" else "pnpx"
+                    (bootstrap.bin_dir / auxiliary).write_bytes(b"auxiliary")
                 return subprocess.CompletedProcess(command, 0)
             bootstrap.user_command = install
             with patch("install_dev_environment.shutil.which", return_value="/usr/bin/npm"):
@@ -1106,17 +1172,23 @@ class SystemCommandTests(unittest.TestCase):
             bootstrap._gpg_fingerprints = UbuntuBootstrap._gpg_fingerprints.__get__(bootstrap)
             with self.assertRaises(InstallError):
                 bootstrap._gpg_fingerprints(b"invalid")
-        for call in run.call_args_list:
-            env = call.kwargs["env"]
+        self.assertEqual(len(run.call_args_list), 2)
+        command_env, gpg_env = [call.kwargs["env"] for call in run.call_args_list]
+        inherited_settings = ("APT_CONFIG", "GPG_AGENT_INFO", "LD_PRELOAD", "BASH_ENV", "http_proxy")
+        for env in (command_env, gpg_env):
             self.assertEqual(env["PATH"], bootstrap.SYSTEM_PATH)
-            self.assertTrue(all(key not in env for key in hostile if key not in ("HOME", "DEBIAN_FRONTEND")))
-            self.assertEqual(env["HOME"], "/root")
+            self.assertTrue(all(key not in env for key in inherited_settings))
             self.assertEqual(env["DEBIAN_FRONTEND"], "noninteractive")
+        self.assertEqual(command_env["HOME"], "/root")
+        self.assertNotEqual(gpg_env["HOME"], hostile["HOME"])
+        self.assertEqual(gpg_env["GNUPGHOME"], gpg_env["HOME"])
 
     def test_root_file_equal_content_rejects_wrong_owner_or_mode(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "dev-bootstrap-test.sources"
             path.write_bytes(b"same")
+            if os.geteuid() == 0:
+                os.chown(path, 65534, 65534)
             bootstrap = UbuntuBootstrap.__new__(UbuntuBootstrap)
             with self.assertRaisesRegex(InstallError, "non sûr"):
                 bootstrap._write_root_file(path, b"same")

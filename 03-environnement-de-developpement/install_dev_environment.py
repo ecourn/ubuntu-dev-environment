@@ -1223,12 +1223,12 @@ class UbuntuBootstrap:
         if not self.dry_run and os.geteuid() != 0:
             self.set_step("validation de sudo avant toute modification")
             result = subprocess.run(
-                [self._system_executable("sudo"), "-v"],
+                [self._system_executable("sudo"), "-n", "true"],
                 check=False,
                 env=self._privileged_env(),
             )
             if result.returncode != 0:
-                raise InstallError("L'authentification sudo a échoué; aucune installation n'a commencé.")
+                raise InstallError("L'accès sudo non interactif a échoué; aucune installation n'a commencé.")
 
     def print_plan(self) -> None:
         print("\nVersions stables résolues (aucune modification effectuée):")
@@ -2234,6 +2234,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--github-auth", action="store_true", help="Authentification GitHub facultative avec token masqué.")
     args = parser.parse_args(argv)
     try:
+        if sys.version_info < (3, 10):
+            detected = ".".join(str(part) for part in sys.version_info[:3])
+            raise InstallError(f"Python 3.10 ou supérieur est requis; version détectée : {detected}.")
         bootstrap = UbuntuBootstrap(dry_run=args.dry_run, github_auth=args.github_auth)
         if args.uninstall:
             bootstrap.uninstall()
@@ -2246,10 +2249,6 @@ def main(argv: list[str] | None = None) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-
-
-
-
 
 
 

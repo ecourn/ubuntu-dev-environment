@@ -18,10 +18,10 @@ dist/
 .env
 .env.*
 !.env.example
-/01-configuration-serveur/cle
-/01-configuration-serveur/priv
-/01-configuration-serveur/serveur-bootstrap-complet.sh
-/01-configuration-serveur/serveur-bootstrap-complet-corrige.sh
+/02-configuration-serveur/cle
+/02-configuration-serveur/priv
+/02-configuration-serveur/serveur-bootstrap-complet.sh
+/02-configuration-serveur/serveur-bootstrap-complet-corrige.sh
 *.pem
 
 # Editor and operating-system files

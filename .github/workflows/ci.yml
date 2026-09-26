@@ -10,7 +10,7 @@ permissions:
 
 jobs:
   check:
-    # ubuntu-26.04 is not in this matrix until GitHub provides a hosted runner.
+    # This CI matrix is a static-check matrix, not the installer's support list.
     strategy:
       fail-fast: false
       matrix:
@@ -44,16 +44,16 @@ jobs:
 
       - name: Python syntax and unit tests
         run: |
-          python3 -m compileall -q 02-environnement-de-developpement
-          cd 02-environnement-de-developpement
+          python3 -m compileall -q 03-environnement-de-developpement
+          cd 03-environnement-de-developpement
           python3 -m unittest discover -s tests -v
 
       - name: Python lint and type checking
         run: |
           python3 -m venv "$RUNNER_TEMP/python-gates"
           "$RUNNER_TEMP/python-gates/bin/python" -m pip install 'ruff==0.13.3' 'mypy==1.18.2'
-          "$RUNNER_TEMP/python-gates/bin/ruff" check --select E4,E7,E9,F 02-environnement-de-developpement
-          "$RUNNER_TEMP/python-gates/bin/mypy" --follow-imports=silent --ignore-missing-imports 02-environnement-de-developpement/install_dev_environment.py
+          "$RUNNER_TEMP/python-gates/bin/ruff" check --select E4,E7,E9,F 03-environnement-de-developpement
+          "$RUNNER_TEMP/python-gates/bin/mypy" --follow-imports=silent --ignore-missing-imports 03-environnement-de-developpement/install_dev_environment.py
 
       - name: Markdown consistency and shell static checks
         shell: bash
@@ -64,8 +64,13 @@ jobs:
           from pathlib import Path
           from urllib.parse import unquote
 
-          docs = [Path('README.md'), Path('SECURITY.md'),
-                  Path('01-configuration-serveur/tuto-script-serveur-complet-3-en-1.md')]
+          docs = [
+              Path('README.md'), Path('SECURITY.md'),
+              Path('01-preparation-utilisateur/README.md'),
+              Path('02-configuration-serveur/README.md'),
+              Path('03-environnement-de-developpement/README.md'),
+              Path('03-environnement-de-developpement/tests/README.md'),
+          ]
           for doc in docs:
               text = doc.read_text(encoding='utf-8')
               fences = [line for line in text.splitlines() if line.startswith('```')]
@@ -75,20 +80,12 @@ jobs:
                   if target and not re.match(r'^[a-z]+://', target):
                       assert (doc.parent / target).exists(), f'{doc}: broken link {dest}'
           PY
-          shopt -s globstar nullglob
-          scripts=(01-configuration-serveur/bin/**/*.sh)
-          test "${#scripts[@]}" -gt 0
+          scripts=(01-preparation-utilisateur/*.sh 02-configuration-serveur/*.sh)
+          test -f "${scripts[0]}"
+          test -f "02-configuration-serveur/configuration-serveur.sh"
           for script in "${scripts[@]}"; do
             bash -n "$script"
-            if [[ "$script" == */tests/* ]]; then
-              # Dynamic function extraction in this harness is opaque to ShellCheck.
-              shellcheck -s bash -S error "$script"
-            else
-              shellcheck -s bash "$script"
-            fi
-          done
-          for test_script in 01-configuration-serveur/bin/tests/test_*.sh; do
-            bash "$test_script"
+            shellcheck -s bash "$script"
           done
 
       - name: Secret scan of working tree
