@@ -44,6 +44,7 @@ jobs:
 
       - name: Python syntax and unit tests
         run: |
+          python3 -m unittest discover -s 01-preparation-utilisateur/tests -v
           python3 -m compileall -q 03-environnement-de-developpement
           cd 03-environnement-de-developpement
           python3 -m unittest discover -s tests -v

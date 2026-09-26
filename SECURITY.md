@@ -4,9 +4,9 @@ Les scripts de ce dépôt modifient des comptes, les droits administrateur, des 
 
 ## Compte et accès SSH
 
-Le bootstrap crée ou configure le compte `ubuntu`, ajoute une clé publique à `authorized_keys` si nécessaire et accorde `sudo` sans mot de passe pour permettre une installation non interactive. Toute personne ou tout processus utilisant ce compte peut donc obtenir les privilèges administrateur. Protégez l’accès SSH au compte et n’y autorisez que des clés de confiance.
+Le bootstrap crée ou configure le compte `ubuntu`, valide avec OpenSSH les clés autorisées du compte initial et les installe dans `/home/ubuntu/.ssh/authorized_keys`. Si aucune clé exploitable n’existe, il demande une clé publique OpenSSH dans le terminal. Si une clé existe déjà, il permet aussi d’ajouter la clé PuTTYgen que vous venez de créer ou de conserver uniquement les clés détectées. Pour PuTTYgen, fournissez uniquement le champ **Public key for pasting into OpenSSH authorized_keys file**. La clé privée, notamment le fichier `.ppk`, doit rester sur le poste client et ne doit jamais être collée ni copiée sur le serveur. Toute personne ou tout processus utilisant le compte `ubuntu` peut obtenir les privilèges administrateur; n’y autorisez que des clés de confiance.
 
-La clé privée SSH reste sur le poste client. Le script serveur n’accepte pas de clé privée en entrée. Gardez la première session ouverte et testez une deuxième connexion depuis le client avant de confirmer la suppression de l’ancien accès. Le mécanisme de restauration couvre les fichiers de configuration SSH, UFW et Fail2ban qu’il gère; il ne peut pas restaurer le pare-feu externe du fournisseur ni annuler l’installation des paquets APT.
+Après l’étape 1, gardez la session initiale ouverte et vérifiez une nouvelle connexion PuTTY avec l’utilisateur `ubuntu` et la clé privée correspondante. Ce test réel depuis le client est requis avant l’étape 2, qui désactive l’authentification par mot de passe; le script demande de confirmer qu’il a réussi avant toute modification. Le durcissement fait également un autotest local avec une clé Ed25519 temporaire; ce test ne prouve pas que la clé du poste client fonctionne. Il demande ensuite un deuxième test PuTTY avant de finaliser. Le mécanisme de restauration couvre les fichiers de configuration SSH, UFW et Fail2ban qu’il gère; il ne peut pas restaurer le pare-feu externe du fournisseur ni annuler l’installation des paquets APT.
 
 La configuration UFW applique par défaut une politique entrante restrictive. Vérifiez les ports des services déjà hébergés et les règles du fournisseur. Docker peut créer des règles réseau qui contournent UFW; contrôlez les ports publiés et la politique réseau adaptée à votre hôte.
 
@@ -14,7 +14,7 @@ La configuration UFW applique par défaut une politique entrante restrictive. V�
 
 L’installateur Python accepte les versions Ubuntu reconnues comme officiellement prises en charge par les métadonnées Ubuntu, nécessite Python 3.10 ou supérieur et limite les architectures à `amd64` et `arm64`. La CI vérifie le code sur les runners GitHub Ubuntu 22.04 et 24.04. Elle n’exécute pas les installateurs et ne constitue pas une validation complète d’installation pour chaque version admise.
 
-La CI lance les tests unitaires existants, les contrôles statiques Python et Shell, vérifie les liens et les blocs de code Markdown, et scanne le checkout avec Gitleaks. Elle ne scanne pas tout l’historique Git.
+La CI lance les tests automatisés du traitement des clés SSH et de l’installateur, les contrôles statiques Python et Shell, vérifie les liens et les blocs de code Markdown, et scanne le checkout avec Gitleaks. Elle ne scanne pas tout l’historique Git.
 
 ## Signaler une vulnérabilité
 

@@ -162,7 +162,8 @@ find_existing_authorized_keys_for_user() {
     }
     load_authorized_keys_candidates
     for path in "${AUTHORIZED_KEYS_CANDIDATES[@]}"; do
-        if [[ -f "$path" && ! -L "$path" && -s "$path" ]]; then
+        if [[ -f "$path" && ! -L "$path" && -s "$path" ]] &&
+            ssh-keygen -lf "$path" >/dev/null 2>&1; then
             AUTHORIZED_KEYS_FILE="$path"
             return 0
         fi
@@ -173,13 +174,20 @@ find_existing_authorized_keys_for_user() {
     return 1
 }
 
+no_authorized_keys_error() {
+    local candidate="$1" home
+    home="$(user_home "$candidate")"
+    [[ -n "$home" ]] || home="/home/$candidate"
+    die "Aucune clé SSH publique exploitable n'a été trouvée pour $candidate. Vérifiez le fichier AuthorizedKeysFile (emplacement habituel : $home/.ssh/authorized_keys), terminez d'abord l'étape 1 du README et testez une connexion réelle par clé depuis votre poste client avant de relancer le durcissement. Ne transmettez jamais votre clé privée."
+}
+
 select_admin_user() {
     local name _ uid shell
     local -a matches=()
 
     if [[ -n "$REQUESTED_ADMIN_USER" ]]; then
         is_human_user "$REQUESTED_ADMIN_USER" || die "compte administrateur invalide ou non interactif: $REQUESTED_ADMIN_USER"
-        find_existing_authorized_keys_for_user "$REQUESTED_ADMIN_USER" || die "aucun authorized_keys non vide et exploitable trouvé pour $REQUESTED_ADMIN_USER"
+        find_existing_authorized_keys_for_user "$REQUESTED_ADMIN_USER" || no_authorized_keys_error "$REQUESTED_ADMIN_USER"
         return 0
     fi
 
@@ -194,7 +202,7 @@ select_admin_user() {
         if find_existing_authorized_keys_for_user "$name"; then matches+=("$name"); fi
     done < <(getent passwd)
 
-    ((${#matches[@]} > 0)) || die "aucun compte humain avec authorized_keys non vide n'a été détecté; utilisez --user"
+    ((${#matches[@]} > 0)) || die "Aucune clé SSH publique exploitable n'a été détectée pour un compte humain. Terminez l'étape 1 du README, testez une connexion par clé depuis votre poste client, puis relancez; ne transmettez jamais de clé privée."
     ((${#matches[@]} == 1)) || die "plusieurs comptes SSH sont éligibles (${matches[*]}); utilisez --user pour choisir explicitement"
     find_existing_authorized_keys_for_user "${matches[0]}" || die "impossible de résoudre authorized_keys pour ${matches[0]}"
 }
@@ -700,6 +708,18 @@ PY
     info "tunnel TCP local -L validé"
 }
 
+confirm_client_key_pretested() {
+    local tty_path="${1:-/dev/tty}" answer
+    [[ -r "$tty_path" && -w "$tty_path" ]] || die "Un terminal est nécessaire pour confirmer le test PuTTY réalisé après l'étape 1."
+    printf "\nAvant le durcissement, confirmez que vous avez ouvert une deuxième session PuTTY après l'étape 1.\n" >&2
+    printf "Elle doit utiliser le compte ubuntu et la clé privée .ppk correspondante, et l'authentification par clé doit avoir réussi.\n" >&2
+    if ! IFS= read -r -p "Tapez oui pour confirmer ce test préalable : " answer < "$tty_path"; then
+        die "Test préalable non confirmé; aucune modification SSH, UFW ou Fail2ban n'a commencé."
+    fi
+    [[ "$answer" == "oui" ]] || die "Terminez d'abord le test PuTTY de l'étape 1. Aucune modification SSH, UFW ou Fail2ban n'a commencé."
+    info "test PuTTY préalable confirmé"
+}
+
 confirm_external_ssh() {
     local answer
     printf '\n'
@@ -723,6 +743,7 @@ install_final_configs() {
     fi
 }
 
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
 while (($# > 0)); do
     case "$1" in
         --port) (($# >= 2)) || die "--port attend une valeur"; TARGET_PORT="$2"; shift 2 ;;
@@ -744,7 +765,7 @@ valid_positive_integer "$CLIENT_ALIVE_INTERVAL" || die "CLIENT_ALIVE_INTERVAL in
 valid_positive_integer "$CLIENT_ALIVE_COUNT_MAX" || die "CLIENT_ALIVE_COUNT_MAX invalide"
 valid_positive_integer "$F2B_MAX_RETRY" || die "F2B_MAX_RETRY invalide"
 valid_positive_integer "$FAIL2BAN_START_TIMEOUT" || die "FAIL2BAN_START_TIMEOUT invalide"
-for command in awk date dpkg-query getent grep install journalctl mktemp ss sshd systemctl; do need_cmd "$command"; done
+for command in awk date dpkg-query getent grep install journalctl mktemp ss sshd ssh-keygen systemctl; do need_cmd "$command"; done
 command -v apt-get >/dev/null 2>&1 || die "ce script nécessite apt-get (Debian/Ubuntu)"
 
 detect_ssh_units
@@ -753,6 +774,7 @@ detect_current_ports
 preflight_target_port
 if (( DRY_RUN )); then show_discovery; exit 0; fi
 [[ -r /dev/tty && -w /dev/tty ]] || die "un terminal interactif est nécessaire pour valider le nouvel accès SSH depuis le client"
+confirm_client_key_pretested /dev/tty
 
 TMP_DIR="$(mktemp -d)"
 backup_state
@@ -802,3 +824,4 @@ info "port SSH final : $TARGET_PORT"
 info "sauvegarde : $BACKUP_DIR"
 ufw status verbose
 fail2ban-client status sshd
+fi

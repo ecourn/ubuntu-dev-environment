@@ -2,6 +2,12 @@
 
 Cette étape règle les paramètres système et protège l’accès SSH. Exécutez-la après avoir préparé le compte `ubuntu` et cloné le dépôt. Gardez votre première session SSH ouverte jusqu’à la fin.
 
+> **Prérequis SSH : l’étape 2 ne crée pas et n’installe pas la clé SSH initiale.** Elle suppose que `/home/ubuntu/.ssh/authorized_keys` a été préparé par l’étape 1 et qu’une connexion réelle depuis votre poste client avec la clé privée correspondante a déjà réussi. Si ce test n’a pas encore été fait, revenez au [README de l’étape 1](../01-preparation-utilisateur/README.md).
+
+Le durcissement applique notamment `AuthenticationMethods publickey`, `PubkeyAuthentication yes` et `PasswordAuthentication no`. La clé doit donc fonctionner depuis PuTTY **avant** de lancer cette étape. Ne désactivez pas l’accès initial et ne fermez pas votre session de secours avant validation.
+
+Avant toute modification, le script vous demande de confirmer que ce premier test PuTTY a réussi. Cette confirmation ne remplace pas le test : si vous ne l’avez pas fait, répondez autrement que `oui` et revenez à l’étape 1.
+
 ## Ordre d’exécution
 
 Le point d’entrée est `configuration-serveur.sh`. Il vérifie le compte administrateur et le port SSH, puis appelle les deux scripts suivants dans l’ordre :
@@ -25,6 +31,8 @@ Le port de la session SSH actuelle est conservé par défaut; depuis une console
 Avant de finaliser la configuration, le script vous demande de tester une **deuxième connexion SSH depuis votre poste client** sur le port indiqué. Gardez la première session ouverte. Si la nouvelle connexion fonctionne, revenez dans la première session et tapez `oui`.
 
 Toute autre réponse lance la restauration des configurations SSH, UFW et Fail2ban gérées par le script. Les paquets déjà installés restent en place. Les sauvegardes sont conservées dans `/var/backups/ssh-hardening-*`.
+
+Ce test pendant le durcissement est un contrôle supplémentaire de la nouvelle politique. Le script génère aussi une clé Ed25519 temporaire pour vérifier une connexion et un tunnel SSH locaux; cette clé de test interne ne valide pas la clé privée `.ppk` de votre poste. Le test PuTTY effectué après l’étape 1 reste obligatoire.
 
 ## Changements apportés au serveur
 
