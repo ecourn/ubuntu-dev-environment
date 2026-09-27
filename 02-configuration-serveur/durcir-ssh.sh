@@ -51,7 +51,7 @@ usage() {
 Usage: durcir-ssh.sh [options]
 
 Options:
-  --port PORT          port SSH final, défaut: port SSH actuel ou 22
+  --port PORT          port SSH final, défaut: aléatoire (49152–65535)
   --user USER          compte SSH à conserver, défaut: SSH_ADMIN_USER ou détection sûre
   --dry-run            affiche les détections sans modifier la machine
   --keep-old-port      conserve les anciennes règles UFW à la fin
@@ -81,18 +81,6 @@ valid_port() {
     [[ "${1:-}" =~ ^[0-9]+$ ]] || return 1
     (( 1 <= 10#$1 && 10#$1 <= 65535 ))
 }
-
-if [[ -z "$TARGET_PORT" ]]; then
-    current_connection_port=""
-    if [[ -n "${SSH_CONNECTION:-}" ]]; then
-        IFS=' ' read -r _client_ip _client_port _server_ip current_connection_port _extra <<< "$SSH_CONNECTION"
-    fi
-    if valid_port "${current_connection_port:-}"; then
-        TARGET_PORT="$current_connection_port"
-    else
-        TARGET_PORT=22
-    fi
-fi
 
 valid_positive_integer() {
     [[ "${1:-}" =~ ^[0-9]+$ ]] || return 1
@@ -257,6 +245,21 @@ detect_current_ports() {
 port_is_listening() {
     local port="$1"
     ss -Hlnt 2>/dev/null | awk -v p="$port" '{a=$4; sub(/^.*:/,"",a); if (a==p) found=1} END {exit found ? 0 : 1}'
+}
+
+random_ssh_port() {
+    command -v shuf >/dev/null 2>&1 || die "commande introuvable: shuf"
+    command -v ss >/dev/null 2>&1 || die "commande introuvable: ss"
+
+    local attempt candidate
+    for ((attempt = 0; attempt < 256; attempt++)); do
+        candidate="$(shuf -i 49152-65535 -n 1)" || die "impossible de choisir un port SSH aléatoire"
+        if ! port_is_listening "$candidate"; then
+            printf '%s\n' "$candidate"
+            return 0
+        fi
+    done
+    die "impossible de trouver un port TCP libre dans la plage 49152-65535"
 }
 
 preflight_target_port() {
@@ -711,9 +714,11 @@ PY
 confirm_client_key_pretested() {
     local tty_path="${1:-/dev/tty}" answer
     [[ -r "$tty_path" && -w "$tty_path" ]] || die "Un terminal est nécessaire pour confirmer le test PuTTY réalisé après l'étape 1."
+    printf "Port SSH final prévu : %s/tcp.\n" "$TARGET_PORT" >&2
+    printf "Si votre fournisseur applique un pare-feu réseau, autorisez ce port et gardez l'ancien port SSH ouvert.\n" >&2
     printf "\nAvant le durcissement, confirmez que vous avez ouvert une deuxième session PuTTY après l'étape 1.\n" >&2
     printf "Elle doit utiliser le compte ubuntu et la clé privée .ppk correspondante, et l'authentification par clé doit avoir réussi.\n" >&2
-    if ! IFS= read -r -p "Tapez oui pour confirmer ce test préalable : " answer < "$tty_path"; then
+    if ! IFS= read -r -p "Tapez oui après ces vérifications préalables : " answer < "$tty_path"; then
         die "Test préalable non confirmé; aucune modification SSH, UFW ou Fail2ban n'a commencé."
     fi
     [[ "$answer" == "oui" ]] || die "Terminez d'abord le test PuTTY de l'étape 1. Aucune modification SSH, UFW ou Fail2ban n'a commencé."
@@ -758,6 +763,7 @@ while (($# > 0)); do
 done
 
 (( EUID == 0 )) || die "exécuter en root, par exemple : sudo bash $0"
+if [[ -z "$TARGET_PORT" ]]; then TARGET_PORT="$(random_ssh_port)"; fi
 valid_port "$TARGET_PORT" || die "port invalide : $TARGET_PORT"
 valid_positive_integer "$MAX_AUTH_TRIES" || die "MAX_AUTH_TRIES invalide"
 valid_positive_integer "$LOGIN_GRACE_TIME" || die "LOGIN_GRACE_TIME invalide"

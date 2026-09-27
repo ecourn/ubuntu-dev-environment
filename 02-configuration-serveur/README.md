@@ -24,7 +24,7 @@ sudo env SSH_CONNECTION="${SSH_CONNECTION:-}" \
   --user ubuntu
 ```
 
-Le port de la session SSH actuelle est conservé par défaut; depuis une console locale, le port 22 est utilisé. Vérifiez que ce port est aussi autorisé par le pare-feu de votre fournisseur. Pour choisir un autre port, ajoutez `--port PORT`.
+Sans `--port`, le script choisit un port aléatoire libre dans la plage `49152–65535`. Pour en fixer un vous-même, ajoutez `--port PORT`, par exemple `--port 54321`. Le précontrôle affiche le port choisi. Avant le durcissement, le script vous demande de confirmer qu'il est autorisé dans le pare-feu réseau de votre fournisseur, si celui-ci en utilise un. Gardez aussi l'ancien port ouvert. Le script ouvre d'abord le nouveau port dans UFW en conservant l'ancien, puis demande de vérifier une deuxième connexion PuTTY sur le port choisi. Il ne retire l'ancien port qu'après cette confirmation.
 
 ## Vérification de l’accès SSH
 

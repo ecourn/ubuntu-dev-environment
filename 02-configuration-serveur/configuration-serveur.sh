@@ -17,7 +17,7 @@ Usage:
 
 Options:
   --user USER        Compte SSH administrateur à conserver.
-  --port PORT        Port SSH final; défaut : port de la session ou 22.
+  --port PORT        Port SSH final; défaut : aléatoire (49152–65535).
   --keep-old-port    Conserve les anciennes règles UFW SSH gérées.
   --skip-locale      Garde la locale et le fuseau existants.
   --skip-hardening   Ne modifie pas SSH, UFW et Fail2ban.
@@ -39,6 +39,25 @@ valid_port() {
     (( 1 <= 10#$1 && 10#$1 <= 65535 ))
 }
 
+random_ssh_port() {
+    command -v shuf >/dev/null 2>&1 || die "commande shuf introuvable"
+    command -v ss >/dev/null 2>&1 || die "commande ss introuvable"
+
+    local listeners candidate attempt
+    listeners="$(ss -Hlnt 2>/dev/null)" || die "impossible de détecter les ports TCP à l'écoute"
+    for ((attempt = 0; attempt < 256; attempt++)); do
+        candidate="$(shuf -i 49152-65535 -n 1)" || die "impossible de choisir un port SSH aléatoire"
+        if ! awk -v wanted="$candidate" '
+            { address=$4; sub(/^.*:/, "", address); if (address == wanted) found=1 }
+            END { exit found ? 0 : 1 }
+        ' <<< "$listeners"; then
+            printf '%s\n' "$candidate"
+            return 0
+        fi
+    done
+    die "impossible de trouver un port TCP libre dans la plage 49152–65535"
+}
+
 while (($# > 0)); do
     case "$1" in
         --user) need_value "$@"; ADMIN_USER="$2"; shift 2 ;;
@@ -54,24 +73,15 @@ while (($# > 0)); do
     esac
 done
 
-if [[ -z "$FINAL_SSH_PORT" ]]; then
-    current_connection_port=""
-    if [[ -n "${SSH_CONNECTION:-}" ]]; then
-        IFS=' ' read -r _client_ip _client_port _server_ip current_connection_port _extra <<< "$SSH_CONNECTION"
-    fi
-    if valid_port "${current_connection_port:-}"; then
-        FINAL_SSH_PORT="$current_connection_port"
-    else
-        FINAL_SSH_PORT=22
-    fi
-fi
-valid_port "$FINAL_SSH_PORT" || die "port SSH final invalide : $FINAL_SSH_PORT"
 (( EUID == 0 )) || die "exécutez ce script avec sudo, par exemple : sudo bash $0 --user ubuntu"
 [[ -n "$ADMIN_USER" ]] || die "compte administrateur indéterminé; utilisez --user ubuntu"
 [[ "$ADMIN_USER" != root ]] || die "root ne peut pas être le compte SSH administrateur conservé"
 id "$ADMIN_USER" >/dev/null 2>&1 || die "compte inexistant : $ADMIN_USER"
 [[ -x "$SCRIPT_DIR/configuration-locale.sh" ]] || die "script de locale introuvable : $SCRIPT_DIR/configuration-locale.sh"
 [[ -x "$SCRIPT_DIR/durcir-ssh.sh" ]] || die "script SSH introuvable : $SCRIPT_DIR/durcir-ssh.sh"
+
+if [[ -z "$FINAL_SSH_PORT" ]]; then FINAL_SSH_PORT="$(random_ssh_port)"; fi
+valid_port "$FINAL_SSH_PORT" || die "port SSH final invalide : $FINAL_SSH_PORT"
 
 if (( DRY_RUN == 0 && SKIP_HARDENING == 0 )); then
     [[ -r /dev/tty && -w /dev/tty ]] || die "un terminal interactif est nécessaire pour valider le nouvel accès SSH depuis le client"
