@@ -1,28 +1,28 @@
 # Politique de sécurité
 
-Les scripts modifient des comptes, paquets et paramètres SSH. Gardez toujours une session SSH initiale et un accès console de secours pendant les opérations sensibles.
+Les scripts modifient des comptes, des paquets, la locale et les paramètres SSH, UFW et Fail2ban. Une erreur peut interrompre l’accès au serveur. Gardez une session SSH initiale et un accès console de secours pendant les opérations sensibles.
 
 ## Clés SSH
 
-Le serveur ne doit recevoir que des **clés publiques OpenSSH**. Une clé privée (`.ppk`, `id_rsa`, `id_ed25519` privé, PEM/OpenSSH private key) reste exclusivement sur le poste client. Le workflow SSH refuse les formats manifestement privés et valide la clé publique avec `ssh-keygen`.
+Le serveur ne doit recevoir que des **clés publiques OpenSSH**. Une clé privée (`.ppk`, `id_rsa`, `id_ed25519` privé, PEM/OpenSSH private key) reste exclusivement sur le poste client. Le script de préparation du compte valide la clé publique avec `ssh-keygen` et refuse les clés privées.
 
-Avec PuTTY/PuTTYgen, générez la paire sur Windows, gardez `.ppk` sur Windows, exportez/copiez la partie publique au format OpenSSH et transférez uniquement cette partie publique au serveur. La seconde connexion de validation utilise la `.ppk` directement dans PuTTY, jamais sur le serveur.
+Avec PuTTY/PuTTYgen, générez la paire sur Windows, gardez `.ppk` sur Windows, exportez/copiez la partie publique au format OpenSSH et transférez uniquement cette partie publique au serveur. Les connexions de validation utilisent la `.ppk` directement dans PuTTY, jamais sur le serveur.
 
-## Changement SSH transactionnel
+## Durcissement SSH
 
-`01-configuration-serveur/bin/ssh-workflow.sh` est l’unique méthode supportée. `prepare` conserve l’ancien port et les méthodes d’authentification existantes. `finalize` n’applique le durcissement qu’après validation d’une session SSH externe réelle sur le nouveau port, avec origine non-loopback, socket TCP correspondante et ascendance `sshd` cohérente.
+L’étape 2 suppose qu’une connexion réelle par clé avec le compte `ubuntu` a déjà réussi depuis le poste client. Avant toute modification, le script demande de confirmer ce test. Il désactive ensuite l’authentification SSH par mot de passe et demande une deuxième connexion PuTTY sur le port configuré. Gardez la première session ouverte jusqu’à la fin.
 
-Les connexions `localhost`, `127.0.0.1`, `::1` ou initiées depuis le serveur ne prouvent jamais l’accessibilité externe. Aucun mot de passe n’est stocké ni transmis en argument par ce workflow.
+Le script effectue aussi un test SSH local avec une clé Ed25519 temporaire ; ce test interne ne prouve pas que la clé privée du poste client fonctionne. Seule la deuxième connexion réelle depuis le client valide le nouvel accès.
 
-L’état transactionnel est écrit atomiquement. Les phases interrompues `incomplete` et `finalizing` sont considérées comme non saines et nécessitent `status`/`rollback`. Un rollback n’écrase pas silencieusement une modification manuelle d’un fichier géré.
+Si la deuxième connexion n’est pas confirmée, le script restaure les configurations SSH, UFW et Fail2ban qu’il gère. Les paquets déjà installés restent en place ; les sauvegardes sont conservées dans `/var/backups/ssh-hardening-*`. Cette restauration ne peut pas annuler une règle du pare-feu externe du fournisseur.
 
-## UFW et Docker
+## UFW et services hébergés
 
-`prepare` n’active pas UFW, ne change pas ses politiques et ne supprime aucune règle existante. Si UFW est déjà actif, seules les règles nécessaires sont ajoutées et tracées afin de pouvoir retirer uniquement celles créées par le workflow. Un nouveau port déjà occupé ou publié par Docker est refusé lorsqu’il peut être détecté.
+L’étape 2 active UFW avec les connexions entrantes refusées par défaut et les connexions sortantes autorisées, puis autorise le port SSH choisi. Ajoutez les règles nécessaires aux autres services avant de poursuivre. Les ports publiés par Docker peuvent nécessiter une configuration réseau supplémentaire.
 
 ## CI
 
-La CI exécute `bash -n` sur tous les scripts shell, ShellCheck, les tests fonctionnels de `ssh-workflow.sh`, les tests de locale, les tests Python existants et le scan de secrets. Elle ne remplace pas un test réel sur une machine Ubuntu avec accès console de secours.
+La CI exécute `bash -n` et ShellCheck sur les scripts shell, les tests Python existants, les contrôles de documentation et le scan de secrets. Elle ne remplace pas une validation sur un vrai serveur Ubuntu avec accès console de secours.
 
 ## Signaler une vulnérabilité
 

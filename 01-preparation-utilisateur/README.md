@@ -27,4 +27,4 @@ Ne téléchargez/exécutez pas de script temporaire généré. L’ancienne mét
 
 Générez la paire sur Windows. Conservez la clé privée `.ppk` sur Windows, exportez/copiez uniquement la clé publique OpenSSH et fournissez uniquement cette partie publique au serveur. Le script refuse les chemins/fichiers SSH initiaux suspects et valide les clés avec `ssh-keygen`.
 
-Après succès, gardez la session initiale ouverte et ouvrez une deuxième connexion PuTTY comme `ubuntu` avec la `.ppk` restée sur Windows. Cette preuve client doit réussir avant de passer au [workflow SSH transactionnel](../01-configuration-serveur/README.md).
+Après succès, gardez la session initiale ouverte et ouvrez une deuxième connexion PuTTY comme `ubuntu` avec la `.ppk` restée sur Windows. Cette preuve client doit réussir avant de passer à l’[étape 2 de configuration du serveur et de durcissement SSH](../02-configuration-serveur/README.md).

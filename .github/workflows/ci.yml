@@ -57,12 +57,6 @@ jobs:
             shellcheck -s bash "$script"
           done < <(find . -type f -name '*.sh' -print0)
 
-      - name: SSH workflow functional tests
-        run: bash 01-configuration-serveur/bin/tests/test_ssh_workflow.sh
-
-      - name: Locale tests
-        run: bash 01-configuration-serveur/bin/tests/test_locale.sh
-
       - name: Existing Python syntax and unit tests
         run: |
           python3 -m unittest discover -s 01-preparation-utilisateur/tests -v
@@ -108,9 +102,10 @@ jobs:
           legacy_monolith='serveur-bootstrap-''complet'
           ! grep -R -n --exclude-dir=.git --exclude='test_ssh_workflow.sh' --exclude='ci.yml' -F \
             -e "$legacy_function" -e "$legacy_bootstrap" -e "$legacy_monolith" .
-          test -x 01-configuration-serveur/bin/ssh-workflow.sh
-          test -x 01-configuration-serveur/bin/tests/test_ssh_workflow.sh
-          test -x 01-configuration-serveur/bin/tests/test_locale.sh
+          test -f 02-configuration-serveur/README.md
+          test -x 02-configuration-serveur/configuration-serveur.sh
+          test -x 02-configuration-serveur/configuration-locale.sh
+          test -x 02-configuration-serveur/durcir-ssh.sh
 
       - name: Secret scan of working tree
         shell: bash

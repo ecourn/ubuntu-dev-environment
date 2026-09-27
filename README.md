@@ -1,6 +1,6 @@
 # Ubuntu Dev Environment
 
-Ce dépôt prépare un serveur Ubuntu neuf en trois étapes : préparer le compte `ubuntu`, sécuriser SSH avec un workflow transactionnel, puis installer l’environnement de développement.
+Ce dépôt prépare un serveur Ubuntu neuf en trois étapes : préparer le compte `ubuntu`, configurer le serveur et durcir SSH, puis installer l’environnement de développement.
 
 ## Prérequis
 
@@ -51,15 +51,21 @@ sudo bash ./01-preparation-utilisateur/setup-ubuntu-user.sh
 
 Le script installe uniquement des **clés publiques OpenSSH** dans `authorized_keys`. Gardez la session initiale ouverte. Ouvrez ensuite une deuxième fenêtre PuTTY avec l’utilisateur `ubuntu` et la clé privée `.ppk` conservée sur Windows. Ne poursuivez que si cette connexion réussit réellement depuis le poste client.
 
-## 2. Sécuriser SSH avec `ssh-workflow.sh`
+## 2. Configurer le serveur et durcir SSH
 
-L’unique méthode supportée est `01-configuration-serveur/bin/ssh-workflow.sh`, avec les phases `prepare`, `finalize`, `status` et `rollback`. Consultez le [guide détaillé](01-configuration-serveur/README.md).
+Après avoir vérifié une connexion PuTTY par clé avec le compte `ubuntu`, lancez le point d’entrée de l’étape 2 depuis la racine du dépôt :
 
-En résumé : transférez de nouveau **uniquement la clé publique OpenSSH** vers le serveur, lancez `prepare` en conservant explicitement `SSH_CONNECTION`, ouvrez une nouvelle connexion externe sur le nouveau port, puis lancez `finalize` depuis cette nouvelle session. Gardez l’ancienne session ouverte jusqu’au succès complet de `finalize`.
+```bash
+sudo env SSH_CONNECTION="${SSH_CONNECTION:-}" \
+  bash ./02-configuration-serveur/configuration-serveur.sh \
+  --user ubuntu
+```
+
+Cette étape règle la locale et le fuseau horaire, puis configure SSH, UFW et Fail2ban. Gardez la première session ouverte et suivez le [guide détaillé de l’étape 2](02-configuration-serveur/README.md) : il demande une deuxième connexion depuis votre poste avant de confirmer les changements. UFW applique une politique entrante restrictive ; vérifiez les ports de vos autres services et les règles du fournisseur.
 
 ## 3. Installer l’environnement de développement
 
-Après `finalize` :
+Après confirmation de l’étape 2 :
 
 ```bash
 python3 ~/ubuntu-dev-environment/03-environnement-de-developpement/install_dev_environment.py
@@ -69,6 +75,4 @@ Voir le [README de l’environnement de développement](03-environnement-de-deve
 
 ## Sécurité et récupération
 
-Aucun mot de passe n’est stocké ou passé en argument par le workflow SSH. `prepare` n’active pas UFW, ne change pas ses politiques et ne supprime aucune règle existante. Un test `localhost`, `127.0.0.1`, `::1` ou initié depuis le serveur lui-même n’est jamais accepté comme preuve de connectivité externe.
-
-Consultez aussi [SECURITY.md](SECURITY.md).
+Gardez un accès console de secours pendant le durcissement. En cas de refus de la deuxième connexion SSH, ne confirmez pas les changements : le script restaure les configurations SSH, UFW et Fail2ban qu’il gère. Consultez [SECURITY.md](SECURITY.md) pour les effets et limites de cette restauration.
