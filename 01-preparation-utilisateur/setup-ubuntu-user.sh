@@ -28,11 +28,25 @@ check_ubuntu() {
 initial_user_home() {
     local record
     if [[ -n "${SUDO_USER:-}" && "$SUDO_USER" != root ]]; then
-        record="$(getent passwd "$SUDO_USER" || true)"
+        if ! record="$(getent passwd "$SUDO_USER")"; then record=""; fi
         [[ -n "$record" ]] || die "Le compte initial '$SUDO_USER' est introuvable."
         cut -d: -f6 <<< "$record"
     else
         printf '/root\n'
+    fi
+}
+
+
+validate_initial_public_key_source() {
+    local initial_home="$1" ssh_dir="$initial_home/.ssh" auth="$ssh_dir/authorized_keys"
+    [[ -d "$initial_home" && ! -L "$initial_home" ]] || die "Le home initial $initial_home doit être un répertoire normal."
+    [[ ! -L "$ssh_dir" ]] || die "$ssh_dir est un lien symbolique inattendu; vérifiez-le avant de relancer."
+    if [[ -e "$ssh_dir" && ! -d "$ssh_dir" ]]; then
+        die "$ssh_dir existe mais n'est pas un répertoire."
+    fi
+    [[ ! -L "$auth" ]] || die "$auth est un lien symbolique inattendu; vérifiez-le avant de relancer."
+    if [[ -e "$auth" && ! -f "$auth" ]]; then
+        die "$auth existe mais n'est pas un fichier normal."
     fi
 }
 
@@ -169,7 +183,7 @@ ensure_authorized_keys() {
         local prompt_scratch_directory prompt_scratch_file prompt_fingerprint
         prompt_scratch_directory="$(mktemp -d)" || die "Impossible de préparer la validation de la clé publique."
         prompt_scratch_file="$prompt_scratch_directory/public-key"
-        prompt_fingerprint="$(key_fingerprint_for_line "$prompted_key" "$prompt_scratch_file" 2>/dev/null || true)"
+        if ! prompt_fingerprint="$(key_fingerprint_for_line "$prompted_key" "$prompt_scratch_file" 2>/dev/null)"; then prompt_fingerprint=""; fi
         rm -f -- "$prompt_scratch_file"
         rmdir -- "$prompt_scratch_directory"
         [[ -n "$prompt_fingerprint" ]] || die "La valeur fournie n'est pas une clé publique OpenSSH valide. Aucune clé privée ne doit être envoyée."
@@ -181,7 +195,7 @@ ensure_authorized_keys() {
         cat -- "$key_file" > "$temporary_file"
         while IFS= read -r line || [[ -n "$line" ]]; do
             scratch_file="${temporary_file}.fingerprint"
-            fingerprint="$(key_fingerprint_for_line "$line" "$scratch_file" 2>/dev/null || true)"
+            if ! fingerprint="$(key_fingerprint_for_line "$line" "$scratch_file" 2>/dev/null)"; then fingerprint=""; fi
             [[ -z "$fingerprint" ]] || fingerprints["$fingerprint"]=1
         done < "$key_file"
     fi
@@ -189,7 +203,7 @@ ensure_authorized_keys() {
     scratch_file="${temporary_file}.candidate"
     if (( source_status == 0 )); then
         while IFS= read -r line || [[ -n "$line" ]]; do
-            fingerprint="$(key_fingerprint_for_line "$line" "$scratch_file" 2>/dev/null || true)"
+            if ! fingerprint="$(key_fingerprint_for_line "$line" "$scratch_file" 2>/dev/null)"; then fingerprint=""; fi
             [[ -n "$fingerprint" ]] || continue
             [[ -z "${fingerprints[$fingerprint]+present}" ]] || continue
             [[ ! -s "$temporary_file" ]] || printf '\n' >> "$temporary_file"
@@ -199,7 +213,7 @@ ensure_authorized_keys() {
         done < "$source_file"
     fi
     if [[ -n "$prompted_key" ]]; then
-        fingerprint="$(key_fingerprint_for_line "$prompted_key" "$scratch_file" 2>/dev/null || true)"
+        if ! fingerprint="$(key_fingerprint_for_line "$prompted_key" "$scratch_file" 2>/dev/null)"; then fingerprint=""; fi
         if [[ -n "$fingerprint" && -z "${fingerprints[$fingerprint]+present}" ]]; then
             [[ ! -s "$temporary_file" ]] || printf '\n' >> "$temporary_file"
             printf '%s\n' "${prompted_key%$'\r'}" >> "$temporary_file"
@@ -240,7 +254,7 @@ prepare_ssh_key() {
     fi
     if ! getent passwd "$USER_NAME" >/dev/null 2>&1; then
         [[ ! -e "$HOME_DIR" ]] || die "$HOME_DIR existe sans compte ubuntu. Déplacez ou vérifiez ce répertoire avant de relancer."
-        validate_initial_key_path "$initial_home"
+        validate_initial_public_key_source "$initial_home"
         authorized_keys_status "$key_source" || source_status=$?
         if (( source_status == 4 )); then
             die "$key_source n'est pas un fichier normal. Vérifiez-le manuellement; ne placez jamais de clé privée sur le serveur."
@@ -362,7 +376,7 @@ summary() {
     printf '\nReconnectez-vous en tant que ubuntu, puis lancez :\n'
     printf '  git clone %s ~/ubuntu-dev-environment\n' "$REPOSITORY_URL"
     printf '  cd ~/ubuntu-dev-environment\n'
-    printf 'Consultez ensuite 02-configuration-serveur/README.md.\n'
+    printf 'Consultez ensuite 01-configuration-serveur/README.md.\n'
 }
 
 main() {

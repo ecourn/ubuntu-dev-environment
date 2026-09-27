@@ -1,21 +1,29 @@
 # Politique de sécurité
 
-Les scripts de ce dépôt modifient des comptes, les droits administrateur, des paquets système et la configuration SSH/UFW/Fail2ban. Une erreur peut interrompre l’accès au serveur. Utilisez-les sur une version Ubuntu prise en charge et gardez un accès de secours pendant la configuration.
+Les scripts modifient des comptes, paquets et paramètres SSH. Gardez toujours une session SSH initiale et un accès console de secours pendant les opérations sensibles.
 
-## Compte et accès SSH
+## Clés SSH
 
-Le bootstrap crée ou configure le compte `ubuntu`, valide avec OpenSSH les clés autorisées du compte initial et les installe dans `/home/ubuntu/.ssh/authorized_keys`. Si aucune clé exploitable n’existe, il demande une clé publique OpenSSH dans le terminal. Si une clé existe déjà, il permet aussi d’ajouter la clé PuTTYgen que vous venez de créer ou de conserver uniquement les clés détectées. Pour PuTTYgen, fournissez uniquement le champ **Public key for pasting into OpenSSH authorized_keys file**. La clé privée, notamment le fichier `.ppk`, doit rester sur le poste client et ne doit jamais être collée ni copiée sur le serveur. Toute personne ou tout processus utilisant le compte `ubuntu` peut obtenir les privilèges administrateur; n’y autorisez que des clés de confiance.
+Le serveur ne doit recevoir que des **clés publiques OpenSSH**. Une clé privée (`.ppk`, `id_rsa`, `id_ed25519` privé, PEM/OpenSSH private key) reste exclusivement sur le poste client. Le workflow SSH refuse les formats manifestement privés et valide la clé publique avec `ssh-keygen`.
 
-Après l’étape 1, gardez la session initiale ouverte et vérifiez une nouvelle connexion PuTTY avec l’utilisateur `ubuntu` et la clé privée correspondante. Ce test réel depuis le client est requis avant l’étape 2, qui désactive l’authentification par mot de passe; le script demande de confirmer qu’il a réussi avant toute modification. Le durcissement fait également un autotest local avec une clé Ed25519 temporaire; ce test ne prouve pas que la clé du poste client fonctionne. Il demande ensuite un deuxième test PuTTY avant de finaliser. Le mécanisme de restauration couvre les fichiers de configuration SSH, UFW et Fail2ban qu’il gère; il ne peut pas restaurer le pare-feu externe du fournisseur ni annuler l’installation des paquets APT.
+Avec PuTTY/PuTTYgen, générez la paire sur Windows, gardez `.ppk` sur Windows, exportez/copiez la partie publique au format OpenSSH et transférez uniquement cette partie publique au serveur. La seconde connexion de validation utilise la `.ppk` directement dans PuTTY, jamais sur le serveur.
 
-La configuration UFW applique par défaut une politique entrante restrictive. Vérifiez les ports des services déjà hébergés et les règles du fournisseur. Docker peut créer des règles réseau qui contournent UFW; contrôlez les ports publiés et la politique réseau adaptée à votre hôte.
+## Changement SSH transactionnel
 
-## Versions et vérifications
+`01-configuration-serveur/bin/ssh-workflow.sh` est l’unique méthode supportée. `prepare` conserve l’ancien port et les méthodes d’authentification existantes. `finalize` n’applique le durcissement qu’après validation d’une session SSH externe réelle sur le nouveau port, avec origine non-loopback, socket TCP correspondante et ascendance `sshd` cohérente.
 
-L’installateur Python accepte les versions Ubuntu reconnues comme officiellement prises en charge par les métadonnées Ubuntu, nécessite Python 3.10 ou supérieur et limite les architectures à `amd64` et `arm64`. La CI vérifie le code sur les runners GitHub Ubuntu 22.04 et 24.04. Elle n’exécute pas les installateurs et ne constitue pas une validation complète d’installation pour chaque version admise.
+Les connexions `localhost`, `127.0.0.1`, `::1` ou initiées depuis le serveur ne prouvent jamais l’accessibilité externe. Aucun mot de passe n’est stocké ni transmis en argument par ce workflow.
 
-La CI lance les tests automatisés du traitement des clés SSH et de l’installateur, les contrôles statiques Python et Shell, vérifie les liens et les blocs de code Markdown, et scanne le checkout avec Gitleaks. Elle ne scanne pas tout l’historique Git.
+L’état transactionnel est écrit atomiquement. Les phases interrompues `incomplete` et `finalizing` sont considérées comme non saines et nécessitent `status`/`rollback`. Un rollback n’écrase pas silencieusement une modification manuelle d’un fichier géré.
+
+## UFW et Docker
+
+`prepare` n’active pas UFW, ne change pas ses politiques et ne supprime aucune règle existante. Si UFW est déjà actif, seules les règles nécessaires sont ajoutées et tracées afin de pouvoir retirer uniquement celles créées par le workflow. Un nouveau port déjà occupé ou publié par Docker est refusé lorsqu’il peut être détecté.
+
+## CI
+
+La CI exécute `bash -n` sur tous les scripts shell, ShellCheck, les tests fonctionnels de `ssh-workflow.sh`, les tests de locale, les tests Python existants et le scan de secrets. Elle ne remplace pas un test réel sur une machine Ubuntu avec accès console de secours.
 
 ## Signaler une vulnérabilité
 
-Ne publiez pas de clés, jetons, journaux sensibles ni de preuve d’exploitation dans une issue publique. Utilisez de préférence [GitHub Private Vulnerability Reporting](https://github.com/ecourn/ubuntu-dev-environment/security/advisories/new) si cette fonctionnalité est activée. Sinon, ouvrez une issue sans détail technique sensible pour demander un canal privé. Incluez en privé les révisions concernées, les prérequis, l’impact et des étapes minimales de reproduction expurgées de tout secret. Aucun délai de réponse ou de publication n’est garanti.
+Ne publiez jamais de clé, jeton ou journal sensible dans une issue publique. Utilisez GitHub Private Vulnerability Reporting si disponible, sinon demandez un canal privé sans divulguer les détails sensibles publiquement.

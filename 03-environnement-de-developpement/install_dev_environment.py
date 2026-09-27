@@ -501,7 +501,7 @@ def fetch_https_bytes(url: str, *, accept: str = "*/*", max_bytes: int = 20_000_
         raise InstallError("URL HTTPS absente de la liste des sources approuvées.")
     request = urllib.request.Request(
         url,
-        headers={"User-Agent": "ubuntu-dev-bootstrap/1.0", "Accept": accept},
+        headers={"User-Agent": "ubuntu-dev-environment/1.0", "Accept": accept},
     )
     for attempt in range(3):
         try:
@@ -537,7 +537,7 @@ def download_verified_file(url: str, destination: Path, size: int, sha256: str) 
     if not 0 < size <= 250_000_000 or not re.fullmatch(r"[0-9a-fA-F]{64}", sha256):
         raise InstallError("Taille ou SHA-256 d'asset invalide.")
     request = urllib.request.Request(url, headers={
-        "User-Agent": "ubuntu-dev-bootstrap/1.0", "Accept": "application/octet-stream",
+        "User-Agent": "ubuntu-dev-environment/1.0", "Accept": "application/octet-stream",
     })
     fd, temporary_name = tempfile.mkstemp(dir=destination.parent, prefix=".verified-asset-")
     temporary = Path(temporary_name)
@@ -591,7 +591,7 @@ def probe_https_url(url: str) -> None:
     if parsed.scheme != "https" or parsed.hostname not in TRUSTED_HOSTS:
         raise InstallError("URL de dépôt non approuvée.")
     request = urllib.request.Request(
-        url, method="HEAD", headers={"User-Agent": "ubuntu-dev-bootstrap/1.0"}
+        url, method="HEAD", headers={"User-Agent": "ubuntu-dev-environment/1.0"}
     )
     try:
         with urllib.request.urlopen(request, timeout=20) as response:

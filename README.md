@@ -1,77 +1,72 @@
 # Ubuntu Dev Environment
 
-Ce dépôt prépare un serveur Ubuntu neuf en trois étapes, dans l’ordre : créer le compte `ubuntu`, configurer le serveur, puis installer les outils de développement. Chaque étape possède son propre README.
+Ce dépôt prépare un serveur Ubuntu neuf en trois étapes : préparer le compte `ubuntu`, sécuriser SSH avec un workflow transactionnel, puis installer l’environnement de développement.
 
 ## Prérequis
 
-- Un serveur Ubuntu avec une connexion Internet.
-- Une première session SSH ouverte avec un compte initial capable d’utiliser `sudo`.
-- Une clé publique OpenSSH pour se connecter avec `ubuntu`. Si le compte initial ne possède pas déjà de clé publique exploitable, l’étape 1 vous la demandera dans cette session.
+- Un serveur Ubuntu avec un accès console de secours disponible chez l’hébergeur.
+- Une première session SSH réelle ouverte depuis votre poste client avec un compte capable d’utiliser `sudo`.
+- PuTTY et PuTTYgen sous Windows si vous utilisez cet écosystème.
 
-### Windows : préparer la clé avec PuTTYgen
+> [!IMPORTANT]
+> **Lors de la saisie du mot de passe sudo, Linux n'affiche aucun caractère, pas même des astérisques. Tapez normalement le mot de passe puis appuyez sur Entrée.**
 
-1. Ouvrez PuTTYgen et générez une clé **Ed25519**.
-2. Protégez idéalement la clé privée par une passphrase.
-3. Enregistrez le fichier privé `.ppk` uniquement sur votre poste Windows. Ne le copiez jamais sur le serveur et ne le collez jamais dans un terminal.
-4. La valeur à fournir au serveur est le champ **Public key for pasting into OpenSSH authorized_keys file**. Elle ressemble à `ssh-ed25519 AAAAC3... utilisateur@poste`.
-
-L’étape 1 installe cette clé publique dans `/home/ubuntu/.ssh/authorized_keys`. Elle reprend les clés autorisées du compte initial si le fichier contient déjà une clé OpenSSH exploitable ; sinon, elle vous demandera de coller la clé publique. Si elle détecte déjà une clé, elle vous permet aussi d’ajouter la clé PuTTYgen que vous venez de créer, ou d’appuyer sur Entrée pour garder les clés détectées. Le README de l’[étape 1](01-preparation-utilisateur/README.md) décrit les deux cas.
-
-## Parcours d’installation
-
-### 1. Préparer le compte `ubuntu`
-
-Depuis le compte initial, lancez le script hébergé sur GitHub. La commande installe `curl` s’il manque, télécharge le script dans un fichier temporaire et l’exécute avec les droits administrateur :
+Avant toute mutation, vérifiez immédiatement l’accès administrateur :
 
 ```bash
-set -euo pipefail
-umask 077
-bootstrap_script="$(mktemp /tmp/ubuntu-dev-bootstrap.XXXXXX)"
-trap 'rm -f -- "$bootstrap_script"' EXIT
+sudo -v
+```
 
-if ! command -v curl >/dev/null 2>&1; then
-  sudo apt-get update
-  sudo apt-get install -y ca-certificates curl
+Si cette commande échoue, arrêtez-vous : ne lancez aucun script de ce dépôt et ne modifiez ni SSH ni UFW.
+
+## Windows — PuTTY/PuTTYgen : la clé privée ne quitte jamais le PC
+
+1. Ouvrez **PuTTYgen** et générez une paire Ed25519.
+2. Enregistrez la **clé privée `.ppk` uniquement sur Windows**, idéalement protégée par une passphrase. Ne la copiez jamais sur le serveur.
+3. Dans PuTTYgen, copiez/exportez la **clé publique au format OpenSSH** (`Public key for pasting into OpenSSH authorized_keys file`) dans un fichier, par exemple `ubuntu-dev.pub`.
+4. Transférez **uniquement `ubuntu-dev.pub`** vers le serveur, ou collez uniquement son contenu OpenSSH lorsque le script de préparation le demande. Un fichier `.ppk`, `id_rsa`, `id_ed25519` privé ou un bloc `BEGIN OPENSSH PRIVATE KEY` ne doit jamais être envoyé au serveur.
+5. Après création du compte `ubuntu`, configurez PuTTY avec le fichier `.ppk` resté sur Windows et ouvrez une deuxième connexion réelle pour valider l’authentification par clé.
+
+## 1. Préparer le compte `ubuntu`
+
+L’ancien bootstrap temporaire/monolithique n’est plus supporté. Clonez le dépôt et exécutez uniquement le script versionné présent dans le checkout :
+
+```bash
+if ! sudo -v; then
+  echo "Authentification sudo impossible; aucune modification effectuée." >&2
+  exit 1
 fi
 
-curl --fail --location --retry 3 --silent --show-error --proto '=https' --tlsv1.2 \
-  https://raw.githubusercontent.com/ecourn/ubuntu-dev-environment/main/01-preparation-utilisateur/setup-ubuntu-user.sh \
-  --output "$bootstrap_script"
-chmod 700 "$bootstrap_script"
-sudo "$bootstrap_script"
-```
+if ! command -v git >/dev/null 2>&1; then
+  sudo apt-get update
+  sudo apt-get install -y git ca-certificates
+fi
 
-Après le succès de l’étape 1 :
-
-1. Gardez la session initiale ouverte comme accès de secours.
-2. Ouvrez une **deuxième fenêtre PuTTY** vers le serveur. Utilisez `ubuntu` comme nom d’utilisateur et choisissez le fichier `.ppk` correspondant dans la configuration d’authentification.
-3. Vérifiez que cette nouvelle connexion fonctionne réellement par clé. Ne fermez pas la session initiale avant cette validation.
-
-Seulement après ce test, depuis la nouvelle session `ubuntu`, clonez le dépôt :
-
-```bash
 git clone https://github.com/ecourn/ubuntu-dev-environment.git ~/ubuntu-dev-environment
 cd ~/ubuntu-dev-environment
+sudo bash ./01-preparation-utilisateur/setup-ubuntu-user.sh
 ```
 
-Consultez le [README de préparation du compte](01-preparation-utilisateur/README.md) pour savoir précisément ce que le script installe et modifie.
+Le script installe uniquement des **clés publiques OpenSSH** dans `authorized_keys`. Gardez la session initiale ouverte. Ouvrez ensuite une deuxième fenêtre PuTTY avec l’utilisateur `ubuntu` et la clé privée `.ppk` conservée sur Windows. Ne poursuivez que si cette connexion réussit réellement depuis le poste client.
 
-### 2. Configurer le serveur
+## 2. Sécuriser SSH avec `ssh-workflow.sh`
 
-Suivez le [README de configuration du serveur](02-configuration-serveur/README.md). Cette étape suppose que la connexion PuTTY par clé a déjà été testée et vous demande de le confirmer avant toute modification. Elle règle la locale et le fuseau horaire, puis sécurise SSH et configure UFW et Fail2ban. Gardez une session de secours ouverte et effectuez le deuxième test SSH demandé pendant le durcissement.
+L’unique méthode supportée est `01-configuration-serveur/bin/ssh-workflow.sh`, avec les phases `prepare`, `finalize`, `status` et `rollback`. Consultez le [guide détaillé](01-configuration-serveur/README.md).
 
-### 3. Installer l’environnement de développement
+En résumé : transférez de nouveau **uniquement la clé publique OpenSSH** vers le serveur, lancez `prepare` en conservant explicitement `SSH_CONNECTION`, ouvrez une nouvelle connexion externe sur le nouveau port, puis lancez `finalize` depuis cette nouvelle session. Gardez l’ancienne session ouverte jusqu’au succès complet de `finalize`.
 
-Depuis le compte `ubuntu`, lancez l’installateur sans `sudo` :
+## 3. Installer l’environnement de développement
+
+Après `finalize` :
 
 ```bash
 python3 ~/ubuntu-dev-environment/03-environnement-de-developpement/install_dev_environment.py
 ```
 
-Il vérifie les prérequis, puis installe les outils de développement documentés dans le [README de cette étape](03-environnement-de-developpement/README.md). L’étape se termine par la configuration interactive de l’identité Git et de GitHub CLI; lancez-la depuis un terminal.
+Voir le [README de l’environnement de développement](03-environnement-de-developpement/README.md).
 
-## À savoir
+## Sécurité et récupération
 
-La configuration du pare-feu applique une politique entrante restrictive. Vérifiez les ports de vos services et ceux autorisés par le fournisseur avant de terminer l’étape 2. Les scripts peuvent installer des paquets et modifier des réglages système; gardez un accès de secours pendant la configuration.
+Aucun mot de passe n’est stocké ou passé en argument par le workflow SSH. `prepare` n’active pas UFW, ne change pas ses politiques et ne supprime aucune règle existante. Un test `localhost`, `127.0.0.1`, `::1` ou initié depuis le serveur lui-même n’est jamais accepté comme preuve de connectivité externe.
 
-La [politique de sécurité](SECURITY.md) décrit les effets sensibles et les limites des contrôles automatisés. La CI vérifie le code et la documentation; elle n’exécute pas les installateurs sur un vrai serveur.
+Consultez aussi [SECURITY.md](SECURITY.md).

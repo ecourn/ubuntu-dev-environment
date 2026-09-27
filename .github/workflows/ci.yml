@@ -1,4 +1,4 @@
-name: Static checks
+name: CI
 
 on:
   push:
@@ -10,7 +10,6 @@ permissions:
 
 jobs:
   check:
-    # This CI matrix is a static-check matrix, not the installer's support list.
     strategy:
       fail-fast: false
       matrix:
@@ -42,21 +41,42 @@ jobs:
           chmod 0755 gitleaks
           echo "$RUNNER_TEMP/static-tools" >> "$GITHUB_PATH"
 
-      - name: Python syntax and unit tests
+      - name: bash -n on every shell script
+        shell: bash
+        run: |
+          set -euo pipefail
+          while IFS= read -r -d '' script; do
+            bash -n "$script"
+          done < <(find . -type f -name '*.sh' -print0)
+
+      - name: ShellCheck every shell script
+        shell: bash
+        run: |
+          set -euo pipefail
+          while IFS= read -r -d '' script; do
+            shellcheck -s bash "$script"
+          done < <(find . -type f -name '*.sh' -print0)
+
+      - name: SSH workflow functional tests
+        run: bash 01-configuration-serveur/bin/tests/test_ssh_workflow.sh
+
+      - name: Locale tests
+        run: bash 01-configuration-serveur/bin/tests/test_locale.sh
+
+      - name: Existing Python syntax and unit tests
         run: |
           python3 -m unittest discover -s 01-preparation-utilisateur/tests -v
           python3 -m compileall -q 03-environnement-de-developpement
-          cd 03-environnement-de-developpement
-          python3 -m unittest discover -s tests -v
+          (cd 03-environnement-de-developpement && python3 -m unittest discover -s tests -v)
 
-      - name: Python lint and type checking
+      - name: Existing Python lint and type checking
         run: |
           python3 -m venv "$RUNNER_TEMP/python-gates"
           "$RUNNER_TEMP/python-gates/bin/python" -m pip install 'ruff==0.13.3' 'mypy==1.18.2'
           "$RUNNER_TEMP/python-gates/bin/ruff" check --select E4,E7,E9,F 03-environnement-de-developpement
           "$RUNNER_TEMP/python-gates/bin/mypy" --follow-imports=silent --ignore-missing-imports 03-environnement-de-developpement/install_dev_environment.py
 
-      - name: Markdown consistency and shell static checks
+      - name: Documentation and architecture consistency
         shell: bash
         run: |
           set -euo pipefail
@@ -65,13 +85,7 @@ jobs:
           from pathlib import Path
           from urllib.parse import unquote
 
-          docs = [
-              Path('README.md'), Path('SECURITY.md'),
-              Path('01-preparation-utilisateur/README.md'),
-              Path('02-configuration-serveur/README.md'),
-              Path('03-environnement-de-developpement/README.md'),
-              Path('03-environnement-de-developpement/tests/README.md'),
-          ]
+          docs = list(Path('.').rglob('*.md'))
           for doc in docs:
               text = doc.read_text(encoding='utf-8')
               fences = [line for line in text.splitlines() if line.startswith('```')]
@@ -80,20 +94,28 @@ jobs:
                   target = unquote(dest.split('#', 1)[0])
                   if target and not re.match(r'^[a-z]+://', target):
                       assert (doc.parent / target).exists(), f'{doc}: broken link {dest}'
+              for script in re.findall(r'(?<![\w.-])((?:\.?\.?/)?[A-Za-z0-9_./-]+\.sh)\b', text):
+                  if script.startswith('/') or '/' not in script:
+                      continue
+                  if script.startswith('./'):
+                      candidate = (Path('.') / script[2:]).resolve()
+                  else:
+                      candidate = (doc.parent / script).resolve()
+                  assert candidate.exists(), f'{doc}: referenced shell script does not exist: {script}'
           PY
-          scripts=(01-preparation-utilisateur/*.sh 02-configuration-serveur/*.sh)
-          test -f "${scripts[0]}"
-          test -f "02-configuration-serveur/configuration-serveur.sh"
-          for script in "${scripts[@]}"; do
-            bash -n "$script"
-            shellcheck -s bash "$script"
-          done
+          legacy_function='validate_initial_''key_path'
+          legacy_bootstrap='ubuntu-dev-''bootstrap'
+          legacy_monolith='serveur-bootstrap-''complet'
+          ! grep -R -n --exclude-dir=.git --exclude='test_ssh_workflow.sh' --exclude='ci.yml' -F \
+            -e "$legacy_function" -e "$legacy_bootstrap" -e "$legacy_monolith" .
+          test -x 01-configuration-serveur/bin/ssh-workflow.sh
+          test -x 01-configuration-serveur/bin/tests/test_ssh_workflow.sh
+          test -x 01-configuration-serveur/bin/tests/test_locale.sh
 
       - name: Secret scan of working tree
         shell: bash
         run: |
           set -euo pipefail
-          # Exact synthetic GPG subkey fingerprint in a unit test; retain all default rules.
           cat > "$RUNNER_TEMP/gitleaks-ci.toml" <<'TOML'
           [extend]
           useDefault = true
@@ -102,5 +124,3 @@ jobs:
           regexes = ['''^7F38BBB59D064DBCB3D84D725612B36462313325$''']
           TOML
           gitleaks dir . --no-banner --redact --config "$RUNNER_TEMP/gitleaks-ci.toml"
-
-# CI never runs the installers, systemctl, apt mutations, SSH changes, or UFW.

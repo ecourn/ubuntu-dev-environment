@@ -8,7 +8,6 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 SETUP_SCRIPT = ROOT / "01-preparation-utilisateur" / "setup-ubuntu-user.sh"
-HARDEN_SCRIPT = ROOT / "02-configuration-serveur" / "durcir-ssh.sh"
 
 
 class SshKeyPreparationTests(unittest.TestCase):
@@ -267,81 +266,6 @@ class SshKeyPreparationTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("lien symbolique inattendu", result.stderr)
 
-    def run_hardening_selector(self, contents):
-        admin_home = self.root / "admin"
-        admin_home.mkdir(exist_ok=True)
-        auth_file = admin_home / ".ssh" / "authorized_keys"
-        auth_file.parent.mkdir(exist_ok=True)
-        auth_file.write_text(contents)
-        environment = os.environ.copy()
-        environment.update(
-            {
-                "ADMIN_HOME_TEST": str(admin_home),
-                "AUTH_FILE_TEST": str(auth_file),
-                "HARDEN_SCRIPT": str(HARDEN_SCRIPT),
-            }
-        )
-        return subprocess.run(
-            [
-                "bash",
-                "-c",
-                'source "$HARDEN_SCRIPT"; '
-                'user_record() { printf "testadmin:x:1000:1000::%s:/bin/bash\\n" "$ADMIN_HOME_TEST"; }; '
-                'load_authorized_keys_candidates() { AUTHORIZED_KEYS_CANDIDATES=("$AUTH_FILE_TEST"); }; '
-                'is_human_user() { return 0; }; REQUESTED_ADMIN_USER=testadmin; '
-                'select_admin_user; printf "%s\\n" "$AUTHORIZED_KEYS_FILE"',
-            ],
-            env=environment,
-            text=True,
-            capture_output=True,
-            timeout=10,
-        )
-
-    def test_hardening_selector_accepts_valid_key_file(self):
-        result = self.run_hardening_selector(f"# valid comment\n\n{self.public_key}\n")
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("/.ssh/authorized_keys", result.stdout)
-
-    def test_hardening_refuses_missing_or_invalid_key_with_actionable_error(self):
-        result = self.run_hardening_selector("not a public key\n")
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn("étape 1 du README", result.stderr)
-        self.assertIn("testez une connexion réelle", result.stderr)
-        self.assertIn("Ne transmettez jamais votre clé privée", result.stderr)
-
-    def run_hardening_pretest_confirmation(self, answer):
-        master_fd, slave_fd = pty.openpty()
-        self.addCleanup(os.close, master_fd)
-        self.addCleanup(os.close, slave_fd)
-        tty_path = os.ttyname(slave_fd)
-        os.write(master_fd, f"{answer}\n".encode())
-        environment = os.environ.copy()
-        environment.update(
-            {
-                "HARDEN_SCRIPT": str(HARDEN_SCRIPT),
-                "TTY_PATH_TEST": tty_path,
-            }
-        )
-        return subprocess.run(
-            [
-                "bash",
-                "-c",
-                'source "$HARDEN_SCRIPT"; confirm_client_key_pretested "$TTY_PATH_TEST"',
-            ],
-            env=environment,
-            text=True,
-            capture_output=True,
-            timeout=10,
-        )
-
-    def test_hardening_requires_confirmation_of_the_prior_client_test(self):
-        result = self.run_hardening_pretest_confirmation("oui")
-        self.assertEqual(result.returncode, 0, result.stderr)
-
-    def test_hardening_stops_before_changes_without_prior_test_confirmation(self):
-        result = self.run_hardening_pretest_confirmation("non")
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn("Aucune modification SSH", result.stderr)
 
 
 if __name__ == "__main__":
