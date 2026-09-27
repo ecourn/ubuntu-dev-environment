@@ -11,6 +11,8 @@ Ce dépôt prépare un serveur Ubuntu neuf en trois étapes : préparer le compt
 > [!IMPORTANT]
 > **Lors de la saisie du mot de passe sudo, Linux n'affiche aucun caractère, pas même des astérisques. Tapez normalement le mot de passe puis appuyez sur Entrée.**
 
+Pour un compte `ubuntu` nouvellement créé à l'étape 1, le script désactive la connexion par mot de passe avec `--disabled-password` : aucun mot de passe n'est généré ni affiché. Il faut utiliser la clé privée correspondant à la clé publique installée.
+
 Avant toute mutation, vérifiez immédiatement l’accès administrateur :
 
 ```bash

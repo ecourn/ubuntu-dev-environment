@@ -38,7 +38,9 @@ initial_user_home() {
 
 
 validate_initial_public_key_source() {
-    local initial_home="$1" ssh_dir="$initial_home/.ssh" auth="$ssh_dir/authorized_keys"
+    local initial_home="$1"
+    local ssh_dir="$initial_home/.ssh"
+    local auth="$ssh_dir/authorized_keys"
     [[ -d "$initial_home" && ! -L "$initial_home" ]] || die "Le home initial $initial_home doit être un répertoire normal."
     [[ ! -L "$ssh_dir" ]] || die "$ssh_dir est un lien symbolique inattendu; vérifiez-le avant de relancer."
     if [[ -e "$ssh_dir" && ! -d "$ssh_dir" ]]; then

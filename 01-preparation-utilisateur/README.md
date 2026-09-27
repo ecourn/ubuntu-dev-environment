@@ -5,6 +5,8 @@ Cette étape crée/vérifie le compte `ubuntu` et installe uniquement des clés 
 > [!IMPORTANT]
 > **Lors de la saisie du mot de passe sudo, Linux n'affiche aucun caractère, pas même des astérisques. Tapez normalement le mot de passe puis appuyez sur Entrée.**
 
+Pour un compte `ubuntu` nouvellement créé, le script désactive la connexion par mot de passe avec `--disabled-password` : aucun mot de passe n'est généré ni affiché. Connectez-vous avec la clé privée correspondant à la clé publique installée.
+
 Avant de lancer le script :
 
 ```bash
