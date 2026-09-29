@@ -4,7 +4,7 @@ Cette étape termine la configuration après la préparation du compte et du ser
 
 ## Exécution
 
-Connectez-vous avec le compte `ubuntu` et lancez le script **sans `sudo`** :
+Après la fin complète de l'étape 2, connectez-vous avec le compte `ubuntu` sur le **port SSH final affiché à la fin de l'étape 2**. Vérifiez cette nouvelle connexion depuis votre poste avant de fermer l'ancienne session, puis lancez le script **sans `sudo`** :
 
 ```bash
 python3 ~/ubuntu-dev-environment/03-environnement-de-developpement/install_dev_environment.py

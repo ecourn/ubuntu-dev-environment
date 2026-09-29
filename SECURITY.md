@@ -12,7 +12,7 @@ Avec PuTTY/PuTTYgen, générez la paire sur Windows, gardez `.ppk` sur Windows, 
 
 L’étape 2 suppose qu’une connexion réelle par clé avec le compte `ubuntu` a déjà réussi depuis le poste client. Avant toute modification, le script demande de confirmer ce test. Il désactive ensuite l’authentification SSH par mot de passe et demande une deuxième connexion PuTTY sur le port configuré. Gardez la première session ouverte jusqu’à la fin.
 
-Le script effectue aussi un test SSH local avec une clé Ed25519 temporaire ; ce test interne ne prouve pas que la clé privée du poste client fonctionne. Seule la deuxième connexion réelle depuis le client valide le nouvel accès.
+Le script effectue aussi un test SSH local avec une clé Ed25519 temporaire ; ce test interne ne prouve pas que la clé privée du poste client fonctionne. Le test client demandé pendant la transition précède la configuration finale. Après la fin du script, conservez le port SSH final affiché et vérifiez une nouvelle connexion client fraîche sur ce port avant de fermer toute session encore fonctionnelle. Avec `--keep-old-port`, les anciennes règles UFW SSH gérées restent en place, mais l'écoute SSH sur l'ancien port n'est pas garantie.
 
 Si la deuxième connexion n’est pas confirmée, le script restaure les configurations SSH, UFW et Fail2ban qu’il gère. Les paquets déjà installés restent en place ; les sauvegardes sont conservées dans `/var/backups/ssh-hardening-*`. Cette restauration ne peut pas annuler une règle du pare-feu externe du fournisseur.
 

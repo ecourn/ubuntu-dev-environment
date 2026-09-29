@@ -96,6 +96,24 @@ jobs:
                   else:
                       candidate = (doc.parent / script).resolve()
                   assert candidate.exists(), f'{doc}: referenced shell script does not exist: {script}'
+
+          root = Path('README.md').read_text(encoding='utf-8')
+          step2 = Path('02-configuration-serveur/README.md').read_text(encoding='utf-8')
+          script = Path('02-configuration-serveur/configuration-serveur.sh').read_text(encoding='utf-8')
+          step2_command = root.index('bash ./02-configuration-serveur/configuration-serveur.sh')
+          important = root.index('> [!IMPORTANT]', step2_command)
+          step3 = root.index('## 3.', step2_command)
+          assert step2_command < important < step3
+          root_warning = root[important:step3].lower()
+          assert all(term in root_warning for term in ('port ssh', 'conservez', 'nouvelle', 'putty', '.ppk', 'fermez'))
+          final_section = step2.split('## Basculement définitif vers le nouveau port', 1)
+          assert len(final_section) == 2
+          final_section = final_section[1].split('\n## ', 1)[0].lower()
+          assert all(term in final_section for term in ('transition', 'port ssh', 'conservez', 'nouvelle', 'putty', 'fermez', '--keep-old-port'))
+          completion = script.split('info "CONFIGURATION DU SERVEUR TERMINÉE"', 1)
+          assert len(completion) == 2
+          completion = completion[1]
+          assert all(term in completion for term in ("printf 'Port SSH : %s", '"$FINAL_SSH_PORT"', 'nouvelle connexion', 'avant de fermer'))
           PY
           legacy_function='validate_initial_''key_path'
           legacy_bootstrap='ubuntu-dev-''bootstrap'

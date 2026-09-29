@@ -119,4 +119,9 @@ else
     info "CONFIGURATION DU SERVEUR TERMINÉE"
     printf 'Compte SSH : %s\n' "$ADMIN_USER"
     printf 'Port SSH : %s\n' "$FINAL_SSH_PORT"
+    if (( SKIP_HARDENING == 0 )); then
+        printf 'Conservez ce port. Gardez la session actuelle ouverte.\n'
+        printf 'Depuis votre poste client, ouvrez une nouvelle connexion avec le compte %s, votre clé SSH et le port %s.\n' "$ADMIN_USER" "$FINAL_SSH_PORT"
+        printf "Vérifiez cette nouvelle connexion avant de fermer l'ancienne session.\n"
+    fi
 fi

@@ -74,11 +74,14 @@ sudo env SSH_CONNECTION="${SSH_CONNECTION:-}" \
   --user ubuntu
 ```
 
+> [!IMPORTANT]
+> **Conservez impérativement le numéro `Port SSH : ...` affiché à la fin de la commande : c'est le port SSH définitif du serveur.** Ne fermez pas votre session actuelle. Une fois la commande complètement terminée, ouvrez depuis votre poste Windows une **nouvelle** connexion PuTTY avec l'utilisateur `ubuntu`, la même clé privée `.ppk` déjà validée et ce port final. Vérifiez que cette connexion fraîche fonctionne réellement, puis enregistrez le nouveau port dans votre session PuTTY. **Fermez l'ancienne session seulement après cette vérification.** Sauf utilisation volontaire de `--keep-old-port`, les prochaines connexions ne doivent plus utiliser l'ancien port. Même avec cette option, utilisez le port final : elle conserve des règles UFW, sans garantir une écoute SSH sur l'ancien port.
+
 Cette étape règle la locale et le fuseau horaire, puis configure SSH, UFW et Fail2ban. Gardez la première session ouverte et suivez le [guide détaillé de l’étape 2](02-configuration-serveur/README.md) : il demande une deuxième connexion depuis votre poste avant de confirmer les changements. UFW applique une politique entrante restrictive ; vérifiez les ports de vos autres services et les règles du fournisseur.
 
 ## 3. Installer l’environnement de développement
 
-Après confirmation de l’étape 2 :
+Ne commencez l'étape 3 qu'après la fin complète du script de l'étape 2, la conservation du port SSH final affiché et la validation d'une nouvelle connexion SSH fraîche sur ce port. Lancez idéalement l'installation depuis cette nouvelle session :
 
 ```bash
 python3 ~/ubuntu-dev-environment/03-environnement-de-developpement/install_dev_environment.py

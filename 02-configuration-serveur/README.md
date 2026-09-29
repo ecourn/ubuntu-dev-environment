@@ -24,7 +24,7 @@ sudo env SSH_CONNECTION="${SSH_CONNECTION:-}" \
   --user ubuntu
 ```
 
-Sans `--port`, le script choisit un port aléatoire libre dans la plage `49152–65535`. Pour en fixer un vous-même, ajoutez `--port PORT`, par exemple `--port 54321`. Le précontrôle affiche le port choisi. Avant le durcissement, le script vous demande de confirmer qu'il est autorisé dans le pare-feu réseau de votre fournisseur, si celui-ci en utilise un. Gardez aussi l'ancien port ouvert. Le script ouvre d'abord le nouveau port dans UFW en conservant l'ancien, puis demande de vérifier une deuxième connexion PuTTY sur le port choisi. Il ne retire l'ancien port qu'après cette confirmation.
+Sans `--port`, le script choisit un port aléatoire libre dans la plage `49152–65535`. Pour en fixer un vous-même, ajoutez `--port PORT`, par exemple `--port 54321`. Le précontrôle affiche le port choisi. Avant le durcissement, le script vous demande de confirmer qu'il est autorisé dans le pare-feu réseau de votre fournisseur, si celui-ci en utilise un. Gardez aussi l'ancien port ouvert. Le script ouvre d'abord le nouveau port dans UFW en conservant l'ancien, puis demande de vérifier une deuxième connexion PuTTY sur le port choisi. Après cette confirmation, il installe la configuration SSH finale et retire normalement les anciennes règles UFW SSH gérées, sauf avec `--keep-old-port`.
 
 ## Vérification de l’accès SSH
 
@@ -33,6 +33,14 @@ Avant de finaliser la configuration, le script vous demande de tester une **deux
 Toute autre réponse lance la restauration des configurations SSH, UFW et Fail2ban gérées par le script. Les paquets déjà installés restent en place. Les sauvegardes sont conservées dans `/var/backups/ssh-hardening-*`.
 
 Ce test pendant le durcissement est un contrôle supplémentaire de la nouvelle politique. Le script génère aussi une clé Ed25519 temporaire pour vérifier une connexion et un tunnel SSH locaux; cette clé de test interne ne valide pas la clé privée `.ppk` de votre poste. Le test PuTTY effectué après l’étape 1 reste obligatoire.
+
+## Basculement définitif vers le nouveau port
+
+Le test PuTTY demandé par le script intervient **pendant la transition**, lorsque l'ancien et le nouveau port sont configurés. Après votre confirmation, le script installe la configuration finale, vérifie localement le nouveau port et retire normalement les anciennes règles UFW SSH gérées. Avec `--keep-old-port`, ces anciennes règles UFW sont conservées, mais cette option ne garantit pas que SSH écoute encore sur l'ancien port.
+
+À la fin de la commande, la ligne `Port SSH : PORT` indique le **port SSH définitif**. Conservez ce numéro. Lorsque la commande est totalement terminée, **gardez la session actuelle ouverte** et ouvrez depuis votre poste une **nouvelle session PuTTY fraîche** avec le compte `ubuntu`, la même clé privée `.ppk` restée sur Windows et le port final affiché. Vérifiez que cette nouvelle connexion fonctionne, puis enregistrez ce port dans votre session PuTTY. Fermez l'ancienne session seulement après cette vérification. Toutes les connexions SSH suivantes doivent utiliser le port final, y compris si vous avez choisi `--keep-old-port`.
+
+Si la connexion fraîche échoue, gardez toute session encore ouverte et utilisez si nécessaire la console de secours de l'hébergeur. Ne commencez pas l'étape 3 avant d'avoir rétabli et vérifié l'accès sur le port final.
 
 ## Changements apportés au serveur
 
@@ -48,8 +56,8 @@ UFW peut bloquer les autres services hébergés sur le serveur. Ajoutez leurs r�
 
 Pour prévisualiser la détection SSH sans modifier le serveur, ajoutez `--dry-run`. Ce mode saute la configuration de la locale.
 
-Options disponibles : `--keep-old-port` conserve les anciennes règles UFW SSH gérées; `--skip-locale` garde la locale et le fuseau actuels; `--skip-hardening` ne modifie ni SSH, ni UFW, ni Fail2ban. Elles servent aux configurations particulières; le parcours standard n’en a pas besoin.
+Options disponibles : `--keep-old-port` conserve les anciennes règles UFW SSH gérées, sans garantir une écoute SSH sur l'ancien port; `--skip-locale` garde la locale et le fuseau actuels; `--skip-hardening` ne modifie ni SSH, ni UFW, ni Fail2ban. Elles servent aux configurations particulières; le parcours standard n’en a pas besoin.
 
 ## Étape suivante
 
-Après confirmation de la nouvelle connexion SSH, installez les outils de développement selon le [README de l’étape 3](../03-environnement-de-developpement/README.md).
+Après la fin complète du script, la récupération du port SSH final et la validation d'une connexion PuTTY fraîche sur ce port, installez les outils de développement depuis cette nouvelle session selon le [README de l’étape 3](../03-environnement-de-developpement/README.md).
