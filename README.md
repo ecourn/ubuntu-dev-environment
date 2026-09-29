@@ -18,11 +18,13 @@ if sudo -v; then
   sudo apt-get install -y git ca-certificates &&
   git clone https://github.com/ecourn/ubuntu-dev-environment.git ~/ubuntu-dev-environment &&
   cd ~/ubuntu-dev-environment &&
-  sudo bash ./01-preparation-utilisateur/setup-ubuntu-user.sh
+  sudo bash ./01-preparation-utilisateur/setup-ubuntu-user.sh &&
+  cd ~ &&
+  rm -rf -- ~/ubuntu-dev-environment
 fi
 ```
 
-Quand le script le demande, collez **la clé publique OpenSSH**, jamais la `.ppk`. Gardez cette session ouverte. Depuis votre PC, ouvrez une nouvelle connexion PuTTY avec l’utilisateur `ubuntu` et votre `.ppk`. Continuez seulement si elle fonctionne. [Détails de l’étape 1](01-preparation-utilisateur/README.md).
+Quand le script le demande, collez **la clé publique OpenSSH**, jamais la `.ppk`. Après une exécution réussie, le bloc supprime le dépôt cloné dans le répertoire personnel de l’administrateur initial. Gardez cette session ouverte. Depuis votre PC, ouvrez une nouvelle connexion PuTTY avec l’utilisateur `ubuntu` et votre `.ppk`. Continuez seulement si elle fonctionne. [Détails de l’étape 1](01-preparation-utilisateur/README.md).
 
 ## 2. Sécuriser le serveur (nouvelle session `ubuntu`)
 
