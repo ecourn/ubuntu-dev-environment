@@ -41,7 +41,8 @@ fi
 
 if ! command -v git >/dev/null 2>&1; then
   sudo apt-get update
-  sudo apt-get install -y git ca-certificates
+  sudo apt-get upgrade -y
+  sudo apt-get install -y git ca-certificates unzip vim-gtk3
 fi
 
 git clone https://github.com/ecourn/ubuntu-dev-environment.git ~/ubuntu-dev-environment
