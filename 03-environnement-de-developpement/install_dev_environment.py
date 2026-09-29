@@ -1241,6 +1241,7 @@ class UbuntuBootstrap:
         print("  APT: candidat installable non vérifié en mode à blanc; Node/GitHub ci-dessus sont les dernières releases amont.")
         print("  Docker: dernière version stable publiée dans le dépôt APT officiel Docker")
         print("  Docker Compose: dernière version stable publiée dans le dépôt APT officiel Docker")
+        print("  Prérequis Codex: bubblewrap et test du bac à sable; profil AppArmor si nécessaire")
         print(f"  Ubuntu: {self.version_id} ({self.codename}), architecture {self.arch}")
         print("  Git/GitHub CLI: configuration interactive après installation (aucune question en mode à blanc)")
 
@@ -1585,6 +1586,57 @@ class UbuntuBootstrap:
                 raise InstallError(f"{package}: version installée {after}, attendue {self.apt_candidates[package]}.")
             before = self.apt_before[package]
             self.status[package] = "déjà conforme" if before == after else ("mis à jour" if before else "installé")
+
+    def _prepare_codex_sandbox(self) -> None:
+        """Prepare Ubuntu's bwrap sandbox prerequisite without installing Codex."""
+        self.set_step("préparation du bac à sable Linux pour une installation future de Codex")
+        before = self._package_installed_version("bubblewrap")
+        self._safe_apt_install(["bubblewrap"], "installation de bubblewrap depuis Ubuntu")
+        if self._package_installed_version("bubblewrap") is None:
+            raise InstallError("bubblewrap est absent après son installation APT.")
+        bwrap = shutil.which("bwrap", path=self.SYSTEM_PATH)
+        if not bwrap:
+            raise InstallError("Le paquet bubblewrap est installé mais bwrap est introuvable.")
+        self.status["bubblewrap"] = "déjà présent" if before else "installé"
+
+        probe = [bwrap, "--ro-bind", "/", "/", "--dev-bind", "/dev", "/dev",
+                 "--proc", "/proc", "--unshare-user", "--", "/usr/bin/true"]
+        result = self.user_command(probe, capture=True, check=False, timeout=20,
+                                   label="test du bac à sable bubblewrap")
+        if result.returncode == 0:
+            self.status["bwrap_sandbox"] = "opérationnel"
+            return
+        profile = Path("/etc/apparmor.d/bwrap-userns-restrict")
+        source = Path("/usr/share/apparmor/extra-profiles/bwrap-userns-restrict")
+        self._safe_apt_install(["apparmor-utils"], "installation des outils AppArmor pour bubblewrap")
+        if not profile.exists():
+            self._safe_apt_install(
+                ["apparmor-profiles"],
+                "installation du profil AppArmor bubblewrap",
+            )
+            if not source.is_file():
+                raise InstallError(f"Profil AppArmor bubblewrap introuvable: {source}.")
+            self.system_command(
+                ["install", "-m", "0644", str(source), str(profile)],
+                label="installation du profil AppArmor bubblewrap",
+            )
+        if profile.is_symlink() or not profile.is_file():
+            raise InstallError(f"Profil AppArmor bubblewrap invalide: {profile}.")
+        self.system_command(
+            ["apparmor_parser", "-r", str(profile)],
+            label="chargement du profil AppArmor bubblewrap",
+        )
+        result = self.user_command(probe, capture=True, check=False, timeout=20,
+                                   label="nouveau test du bac à sable bubblewrap")
+        if result.returncode != 0:
+            detail = (result.stderr or "").strip().splitlines()
+            suffix = f" Détail: {detail[-1][:300]}" if detail else ""
+            raise InstallError(
+                "bubblewrap ne peut toujours pas créer son bac à sable; vérifiez les restrictions "
+                "du noyau, de l'hébergeur ou du conteneur." + suffix
+            )
+        self.status["bwrap_apparmor"] = "chargé"
+        self.status["bwrap_sandbox"] = "opérationnel"
 
     def _ensure_docker_service(self) -> None:
         self.set_step("activation et démarrage du service Docker")
@@ -2330,6 +2382,8 @@ class UbuntuBootstrap:
         print(f"  Git e-mail: {self.git_config['email']}")
         print(f"  Git branche par défaut: {self.git_config['default_branch']}")
         print(f"  Docker service: actif; authentification GitHub: {self.status.get('gh_auth', 'vérifiée')}")
+        print(f"  Pré requis Codex: bubblewrap {self.status.get('bubblewrap', 'vérifié')}; "
+              f"bac à sable {self.status.get('bwrap_sandbox', 'vérifié')}")
         print(f"  Shell {Path(self.target.shell).name}: {self.status.get('shell', 'configuré')}")
         print("  Ouvrez un nouveau shell pour charger zoxide, fzf et le PATH utilisateur.")
         print("  Docker reste utilisable avec sudo; aucun droit docker-group n'a été accordé.")
@@ -2345,6 +2399,7 @@ class UbuntuBootstrap:
                 self.download_verified_artifacts()
                 self._install_sources()
                 self._install_apt_packages()
+                self._prepare_codex_sandbox()
                 self._ensure_docker_service()
                 self._install_release_tools()
                 self._configure_npm_tools()
@@ -2391,5 +2446,3 @@ def main(argv: list[str] | None = None) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-
-

@@ -1233,6 +1233,40 @@ class SystemCommandTests(unittest.TestCase):
         self.assertIn("nodejs=24.1-1", commands[0])
         self.assertIn("gh=2.3-1", commands[0])
 
+    def test_codex_sandbox_ready_without_apparmor_changes(self):
+        bootstrap = UbuntuBootstrap.__new__(UbuntuBootstrap)
+        bootstrap.status = {}
+        bootstrap.set_step = lambda message: None
+        bootstrap._package_installed_version = lambda name: "1.0"
+        installs = []
+        bootstrap._safe_apt_install = lambda packages, label: installs.append(packages)
+        bootstrap.user_command = lambda command, **kwargs: subprocess.CompletedProcess(command, 0, "", "")
+        with patch("install_dev_environment.shutil.which", return_value="/usr/bin/bwrap"):
+            bootstrap._prepare_codex_sandbox()
+        self.assertEqual(installs, [["bubblewrap"]])
+        self.assertEqual(bootstrap.status["bwrap_sandbox"], "opérationnel")
+
+    def test_codex_sandbox_retries_after_apparmor_profile_load(self):
+        bootstrap = UbuntuBootstrap.__new__(UbuntuBootstrap)
+        bootstrap.status = {}
+        bootstrap.set_step = lambda message: None
+        bootstrap._package_installed_version = lambda name: "1.0"
+        installs = []
+        commands = []
+        bootstrap._safe_apt_install = lambda packages, label: installs.append(packages)
+        bootstrap.system_command = lambda command, **kwargs: commands.append(command)
+        results = iter((1, 0))
+        bootstrap.user_command = lambda command, **kwargs: subprocess.CompletedProcess(
+            command, next(results), "", ""
+        )
+        with patch("install_dev_environment.shutil.which", return_value="/usr/bin/bwrap"), \
+             patch("install_dev_environment.Path.exists", return_value=True), \
+             patch("install_dev_environment.Path.is_file", return_value=True):
+            bootstrap._prepare_codex_sandbox()
+        self.assertEqual(installs, [["bubblewrap"], ["apparmor-utils"]])
+        self.assertEqual(commands[0][:2], ["apparmor_parser", "-r"])
+        self.assertEqual(bootstrap.status["bwrap_sandbox"], "opérationnel")
+
     def test_gpg_rejects_subkey_fingerprints_and_accepts_primary(self):
         bootstrap = UbuntuBootstrap.__new__(UbuntuBootstrap)
         primary = "2C6106201985B60E6C7AC87323F3D4EA75716059"
