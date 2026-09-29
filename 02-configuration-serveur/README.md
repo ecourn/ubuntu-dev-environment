@@ -18,6 +18,6 @@ sudo env SSH_CONNECTION="${SSH_CONNECTION:-}" \
 
 Le test demandé pendant la transition précède la configuration finale. Conservez le numéro `Port SSH : PORT` affiché à la fin. Gardez la session actuelle ouverte et lancez une nouvelle connexion PuTTY sur ce port final avec la même `.ppk`. Fermez l’ancienne session uniquement après ce test. L’option `--keep-old-port` conserve des règles UFW, sans garantir que SSH écoute encore sur l’ancien port.
 
-Le script règle la locale sur `fr_FR.UTF-8`, le fuseau sur `Europe/Paris`, puis configure SSH, UFW et Fail2ban. UFW refuse par défaut les connexions entrantes : prévoyez les règles des autres services hébergés. L’accès SSH par mot de passe est désactivé.
+Le script règle la locale sur `fr_FR.UTF-8`, le fuseau sur `Europe/Paris` et la synchronisation horaire en préservant le backend NTP existant (`chrony` ou `systemd-timesyncd`). Si aucun backend n'est installé, il installe `chrony`. Il configure ensuite SSH, UFW et Fail2ban. UFW refuse par défaut les connexions entrantes : prévoyez les règles des autres services hébergés. L’accès SSH par mot de passe est désactivé.
 
 Pour choisir le port vous-même, ajoutez `--port 54321` à la commande. `--dry-run` prévisualise les contrôles SSH sans modifier le serveur. Les autres options sont affichées avec `bash ./02-configuration-serveur/configuration-serveur.sh --help`. Les limites de la restauration sont décrites dans [SECURITY.md](../SECURITY.md).

@@ -38,7 +38,10 @@ fail() {
   exit 1
 }
 
-trap 'printf "Erreur à la ligne %s.\n" "$LINENO" >&2' ERR
+on_error() {
+  printf 'Erreur à la ligne %s : commande %s (code retour %s).\n' "$1" "$2" "$3" >&2
+}
+trap 'on_error "$LINENO" "$BASH_COMMAND" "$?"' ERR
 
 command -v apt-get >/dev/null 2>&1 || fail 'apt-get est introuvable.'
 command -v locale >/dev/null 2>&1 || fail 'locale est introuvable.'
@@ -53,8 +56,13 @@ fi
 
 printf '%s\n' 'Installation des composants nécessaires...'
 "${SUDO[@]}" apt-get update
+# Refuser toute résolution APT qui retirerait un serveur de temps existant.
+APT_PLAN="$("${SUDO[@]}" env LC_ALL=C apt-get -s install -y locales "$LANGUAGE_PACK")"
+if printf '%s\n' "$APT_PLAN" | grep -Eq '^Remv (chrony|systemd-timesyncd)([[:space:]]|$)'; then
+  fail 'installation de la locale : APT prévoit de supprimer un backend NTP.'
+fi
 "${SUDO[@]}" env DEBIAN_FRONTEND=noninteractive \
-  apt-get install -y locales "$LANGUAGE_PACK" systemd-timesyncd
+  apt-get install -y locales "$LANGUAGE_PACK"
 
 command -v locale-gen >/dev/null 2>&1 || fail 'locale-gen est introuvable après installation.'
 command -v localectl >/dev/null 2>&1 || fail 'localectl est introuvable après installation.'
@@ -89,39 +97,90 @@ CURRENT_TIMEZONE="$(timedatectl show -p Timezone --value)"
   fail "fuseau configuré : $CURRENT_TIMEZONE, attendu : $TARGET_TIMEZONE."
 
 printf '%s\n' 'Activation de la synchronisation NTP...'
-"${SUDO[@]}" systemctl enable --now systemd-timesyncd.service
-"${SUDO[@]}" timedatectl set-ntp true
+package_installed() {
+  [ "$(dpkg-query -W -f='${Status}' "$1" 2>/dev/null)" = 'install ok installed' ]
+}
 
-NTP_ENABLED="$(timedatectl show -p NTP --value 2>/dev/null || true)"
-if [ "$NTP_ENABLED" != 'yes' ]; then
-  fail 'timedatectl ne signale pas NTP comme activé.'
+service_exists() {
+  local state
+  state="$(systemctl show -p LoadState --value "$1")"
+  [ "$state" = 'loaded' ]
+}
+
+command -v dpkg-query >/dev/null 2>&1 || fail 'dpkg-query est introuvable.'
+if package_installed chrony; then
+  TIME_SERVICE=chrony
+elif package_installed systemd-timesyncd; then
+  TIME_SERVICE=systemd-timesyncd
+else
+  printf '%s\n' 'Aucun backend NTP installé : installation de chrony...'
+  "${SUDO[@]}" env DEBIAN_FRONTEND=noninteractive apt-get install -y chrony
+  package_installed chrony || fail "chrony n'est pas installé après APT."
+  TIME_SERVICE=chrony
 fi
 
-START_SECONDS="$(date +%s)"
-while :; do
-  NTP_SYNCED="$(timedatectl show -p NTPSynchronized --value 2>/dev/null || true)"
+TIME_UNIT="${TIME_SERVICE}.service"
+service_exists "$TIME_UNIT" || fail "service NTP introuvable : $TIME_UNIT."
 
-  if [ "$NTP_SYNCED" = 'yes' ]; then
-    break
+if [ "$TIME_SERVICE" = chrony ] && service_exists systemd-timesyncd.service; then
+  if systemctl is-active --quiet systemd-timesyncd.service || \
+     systemctl is-enabled --quiet systemd-timesyncd.service; then
+    "${SUDO[@]}" systemctl disable --now systemd-timesyncd.service
   fi
+fi
 
-  NOW_SECONDS="$(date +%s)"
-  ELAPSED_SECONDS="$((NOW_SECONDS - START_SECONDS))"
+"${SUDO[@]}" systemctl enable --now "$TIME_UNIT"
+systemctl is-active --quiet "$TIME_UNIT" || fail "service NTP inactif : $TIME_UNIT."
+if [ "$TIME_SERVICE" = chrony ] && systemctl is-active --quiet systemd-timesyncd.service; then
+  fail 'chrony et systemd-timesyncd sont actifs simultanément.'
+fi
 
-  if [ "$ELAPSED_SECONDS" -ge "$NTP_WAIT_SECONDS" ]; then
-    printf '%s\n' \
-      "Avertissement : NTP est activé, mais la synchronisation n'est pas encore confirmée." >&2
-    break
+NTP_SYNCED=no
+if [ "$TIME_SERVICE" = chrony ]; then
+  command -v chronyc >/dev/null 2>&1 || fail 'chronyc est introuvable.'
+  if [ "$NTP_WAIT_SECONDS" -eq 0 ]; then
+    # Un seul essai : waitsync 0 attendrait indéfiniment.
+    if chronyc waitsync 1 0 0 0.1 >/dev/null 2>&1; then NTP_SYNCED=yes; fi
+  else
+    NTP_TRIES="$(( (NTP_WAIT_SECONDS + NTP_POLL_SECONDS - 1) / NTP_POLL_SECONDS + 1 ))"
+    if chronyc waitsync "$NTP_TRIES" 0 0 "$NTP_POLL_SECONDS" >/dev/null 2>&1; then
+      NTP_SYNCED=yes
+    fi
   fi
+else
+  START_SECONDS="$(date +%s)"
+  while :; do
+    if [ "$(timedatectl show -p NTPSynchronized --value)" = yes ]; then
+      NTP_SYNCED=yes
+      break
+    fi
+    NOW_SECONDS="$(date +%s)"
+    ELAPSED_SECONDS="$((NOW_SECONDS - START_SECONDS))"
+    [ "$ELAPSED_SECONDS" -lt "$NTP_WAIT_SECONDS" ] || break
+    REMAINING_SECONDS="$((NTP_WAIT_SECONDS - ELAPSED_SECONDS))"
+    if [ "$NTP_POLL_SECONDS" -lt "$REMAINING_SECONDS" ]; then
+      sleep "$NTP_POLL_SECONDS"
+    else
+      sleep "$REMAINING_SECONDS"
+    fi
+  done
+fi
 
-  sleep "$NTP_POLL_SECONDS"
-done
+if [ "$NTP_SYNCED" = no ]; then
+  printf '%s\n' "Avertissement : $TIME_SERVICE est actif, mais la synchronisation n'est pas encore confirmée." >&2
+fi
+
+SERVICE_ACTIVE=non
+if systemctl is-active --quiet "$TIME_UNIT"; then SERVICE_ACTIVE=oui; fi
+SYNC_CONFIRMED=non
+if [ "$NTP_SYNCED" = yes ]; then SYNC_CONFIRMED=oui; fi
 
 printf '%s\n' '--- Vérification finale ---'
 printf 'Locale cible : %s\n' "$TARGET_LOCALE"
 printf 'Locale système : %s\n' "$CURRENT_SYSTEM_LANG"
 printf 'Fuseau : %s\n' "$(timedatectl show -p Timezone --value)"
-printf 'NTP activé : %s\n' "$(timedatectl show -p NTP --value 2>/dev/null || printf 'indisponible')"
-printf 'NTP synchronisé : %s\n' "$(timedatectl show -p NTPSynchronized --value 2>/dev/null || printf 'indisponible')"
+printf 'Service de temps : %s\n' "$TIME_SERVICE"
+printf 'Service actif : %s\n' "$SERVICE_ACTIVE"
+printf 'Synchronisation confirmée : %s\n' "$SYNC_CONFIRMED"
 printf 'Date locale : %s\n' "$(LANG="$TARGET_LOCALE" LC_ALL="$TARGET_LOCALE" date '+%A %d %B %Y %H:%M:%S %Z %z')"
 printf '%s\n' 'CONFIGURATION_OK'

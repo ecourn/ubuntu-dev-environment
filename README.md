@@ -39,6 +39,8 @@ sudo env SSH_CONNECTION="${SSH_CONNECTION:-}" \
 
 Le script affiche le port SSH choisi. Si votre hébergeur a un pare-feu réseau, autorisez ce port **avant de confirmer** et gardez l’ancien ouvert. Lorsque le script le demande, testez depuis votre PC une deuxième connexion PuTTY sur ce port ; tapez `oui` uniquement si elle fonctionne.
 
+Il configure aussi la locale `fr_FR.UTF-8`, le fuseau `Europe/Paris` et la synchronisation horaire en préservant le backend NTP existant (`chrony` ou `systemd-timesyncd`). Si aucun backend n'est installé, il installe `chrony`.
+
 > [!IMPORTANT]
 > Conservez le `Port SSH : ...` final. Sans fermer la session actuelle, ouvrez une nouvelle connexion PuTTY avec la même `.ppk` sur ce port. Fermez l’ancienne session seulement après ce test. Passez à l’étape 3 après cette vérification.
 
