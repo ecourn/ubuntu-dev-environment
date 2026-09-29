@@ -1,30 +1,12 @@
-# Préparer le compte `ubuntu`
+# Étape 1 — Créer le compte `ubuntu`
 
-Cette étape crée/vérifie le compte `ubuntu` et installe uniquement des clés **publiques** OpenSSH dans son `authorized_keys`.
-
-> [!IMPORTANT]
-> **Lors de la saisie du mot de passe sudo, Linux n'affiche aucun caractère, pas même des astérisques. Tapez normalement le mot de passe puis appuyez sur Entrée.**
-
-Pour un compte `ubuntu` nouvellement créé, le script désactive la connexion par mot de passe avec `--disabled-password` : aucun mot de passe n'est généré ni affiché. Connectez-vous avec la clé privée correspondant à la clé publique installée.
-
-Avant de lancer le script :
+Depuis la session administrateur initiale, après avoir cloné le dépôt comme indiqué dans le [parcours principal](../README.md) :
 
 ```bash
-sudo -v
-```
-
-Si l’authentification sudo échoue, n’effectuez aucune modification.
-
-Exécutez ensuite le script versionné depuis le checkout local :
-
-```bash
+cd ~/ubuntu-dev-environment
 sudo bash ./01-preparation-utilisateur/setup-ubuntu-user.sh
 ```
 
-Ne téléchargez/exécutez pas de script temporaire généré. L’ancienne méthode de bootstrap temporaire n’est plus supportée.
+Le script crée ou vérifie `ubuntu` et installe une clé publique OpenSSH dans `authorized_keys`. Si une clé valide existe déjà pour le compte initial, il peut la reprendre. Sinon, collez le champ « Public key for pasting into OpenSSH authorized_keys file » de PuTTYgen quand il le demande. **La clé privée `.ppk` reste sur votre PC.**
 
-## PuTTY/PuTTYgen
-
-Générez la paire sur Windows. Conservez la clé privée `.ppk` sur Windows, exportez/copiez uniquement la clé publique OpenSSH et fournissez uniquement cette partie publique au serveur. Le script refuse les chemins/fichiers SSH initiaux suspects et valide les clés avec `ssh-keygen`.
-
-Après succès, gardez la session initiale ouverte et ouvrez une deuxième connexion PuTTY comme `ubuntu` avec la `.ppk` restée sur Windows. Cette preuve client doit réussir avant de passer à l’[étape 2 de configuration du serveur et de durcissement SSH](../02-configuration-serveur/README.md).
+Le nouveau compte n’a pas de mot de passe de connexion : utilisez sa clé. Gardez la session initiale ouverte et testez une nouvelle connexion PuTTY depuis votre PC avec `ubuntu` et la `.ppk` correspondante. Si elle fonctionne, continuez avec l’[étape 2](../02-configuration-serveur/README.md).

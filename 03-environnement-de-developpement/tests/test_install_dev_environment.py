@@ -517,9 +517,15 @@ class BootstrapSafetyTests(unittest.TestCase):
         bootstrap._gh_is_authenticated = lambda: True
         bootstrap._write_tty = MagicMock()
         bootstrap._ask_yes_no = MagicMock(return_value=False)
+        bootstrap.user_command = MagicMock(return_value=subprocess.CompletedProcess([], 0, stdout="", stderr=""))
         with patch.object(bootstrap, "_read_token_masked", side_effect=AssertionError("unexpected prompt")):
             bootstrap._authenticate_github()
         self.assertEqual(bootstrap.status["gh_auth"], "déjà authentifié")
+        bootstrap.user_command.assert_called_once()
+        self.assertEqual(
+            bootstrap.user_command.call_args.args[0],
+            ["gh", "auth", "setup-git", "--hostname", "github.com"],
+        )
         bootstrap._ask_yes_no.assert_called_once_with(
             "Effectuer une nouvelle authentification ?", default=False
         )
@@ -543,11 +549,12 @@ class BootstrapSafetyTests(unittest.TestCase):
         bootstrap._authenticate_github()
 
         self.assertEqual(bootstrap.status["gh_auth"], "authentifié")
-        self.assertEqual(len(calls), 1)
+        self.assertEqual(len(calls), 2)
         command, options = calls[0]
         self.assertEqual(command, ["gh", "auth", "login", "--hostname", "github.com", "--with-token"])
         self.assertNotIn("ghp-example-secret", command)
         self.assertEqual(options["input_data"], "ghp-example-secret\n")
+        self.assertEqual(calls[1][0], ["gh", "auth", "setup-git", "--hostname", "github.com"])
 
     def test_token_prompt_retries_after_empty_input(self):
         bootstrap = UbuntuBootstrap.__new__(UbuntuBootstrap)

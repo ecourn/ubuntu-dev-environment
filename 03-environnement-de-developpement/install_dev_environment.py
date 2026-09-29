@@ -2215,6 +2215,7 @@ class UbuntuBootstrap:
             self._write_tty("GitHub CLI possède déjà une authentification valide pour github.com.\n")
             if not self._ask_yes_no("Effectuer une nouvelle authentification ?", default=False):
                 self.status["gh_auth"] = "déjà authentifié"
+                self._configure_github_git_credentials()
                 return
         else:
             self._write_tty("Aucune authentification GitHub valide n'a été confirmée pour github.com.\n")
@@ -2236,6 +2237,17 @@ class UbuntuBootstrap:
             raise InstallError("gh auth status ne confirme pas l'authentification GitHub.")
         self.gh_authenticated = True
         self.status["gh_auth"] = "authentifié"
+        self._configure_github_git_credentials()
+
+    def _configure_github_git_credentials(self) -> None:
+        self.set_step("configuration des identifiants Git pour GitHub")
+        result = self.user_command(
+            ["gh", "auth", "setup-git", "--hostname", "github.com"],
+            capture=True, check=False, timeout=30,
+            label="configuration des identifiants Git pour GitHub",
+        )
+        if result.returncode != 0:
+            raise InstallError("gh auth setup-git a échoué; Git ne pourra pas utiliser la connexion GitHub CLI.")
 
     def _verify_command_version(self, name: str, expected: str, command: list[str]) -> str:
         self.set_step(f"vérification de {name}")
@@ -2379,6 +2391,5 @@ def main(argv: list[str] | None = None) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-
 
 

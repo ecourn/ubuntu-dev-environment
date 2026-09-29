@@ -1,94 +1,55 @@
 # Ubuntu Dev Environment
 
-Ce dépôt prépare un serveur Ubuntu neuf en trois étapes : préparer le compte `ubuntu`, configurer le serveur et durcir SSH, puis installer l’environnement de développement.
+Prépare un serveur Ubuntu en trois étapes : créer le compte `ubuntu`, sécuriser SSH, puis installer les outils de développement. Suivez les étapes dans l’ordre. Gardez la console de secours de l’hébergeur accessible.
 
-## Prérequis
+## Avant de commencer (sur votre PC)
 
-- Un serveur Ubuntu avec un accès console de secours disponible chez l’hébergeur.
-- Une première session SSH réelle ouverte depuis votre poste client avec un compte capable d’utiliser `sudo`.
-- PuTTY et PuTTYgen sous Windows si vous utilisez cet écosystème.
+Avec PuTTYgen, créez une clé Ed25519. Enregistrez la clé privée `.ppk` **sur votre PC uniquement**. Gardez ouverte une connexion SSH au serveur avec un compte administrateur (`sudo` ou `root`). Le serveur ne doit recevoir que la clé **publique OpenSSH**, affichée par PuTTYgen dans le champ « Public key for pasting into OpenSSH authorized_keys file ».
 
-> [!IMPORTANT]
-> **Lors de la saisie du mot de passe sudo, Linux n'affiche aucun caractère, pas même des astérisques. Tapez normalement le mot de passe puis appuyez sur Entrée.**
+> Quand `sudo` demande un mot de passe, rien ne s’affiche pendant la saisie : tapez-le puis appuyez sur Entrée.
 
-Pour un compte `ubuntu` nouvellement créé à l'étape 1, le script désactive la connexion par mot de passe avec `--disabled-password` : aucun mot de passe n'est généré ni affiché. Il faut utiliser la clé privée correspondant à la clé publique installée.
+## 1. Créer le compte `ubuntu` (session administrateur initiale)
 
-Avant toute mutation, vérifiez immédiatement l’accès administrateur :
+Copiez ce bloc dans la session SSH initiale. Si `sudo -v` échoue, les autres commandes ne seront pas lancées.
 
 ```bash
-sudo -v
-```
-
-Si cette commande échoue, arrêtez-vous : ne lancez aucun script de ce dépôt et ne modifiez ni SSH ni UFW.
-
-## Windows — PuTTY/PuTTYgen : la clé privée ne quitte jamais le PC
-
-1. Ouvrez **PuTTYgen** et générez une paire Ed25519.
-2. Enregistrez la **clé privée `.ppk` uniquement sur Windows**, idéalement protégée par une passphrase. Ne la copiez jamais sur le serveur.
-3. Dans PuTTYgen, copiez/exportez la **clé publique au format OpenSSH** (`Public key for pasting into OpenSSH authorized_keys file`) dans un fichier, par exemple `ubuntu-dev.pub`.
-4. Transférez **uniquement `ubuntu-dev.pub`** vers le serveur, ou collez uniquement son contenu OpenSSH lorsque le script de préparation le demande. Un fichier `.ppk`, `id_rsa`, `id_ed25519` privé ou un bloc `BEGIN OPENSSH PRIVATE KEY` ne doit jamais être envoyé au serveur.
-5. Après création du compte `ubuntu`, configurez PuTTY avec le fichier `.ppk` resté sur Windows et ouvrez une deuxième connexion réelle pour valider l’authentification par clé.
-
-## 1. Préparer le compte `ubuntu`
-
-L’ancien bootstrap temporaire/monolithique n’est plus supporté. Clonez le dépôt et exécutez uniquement le script versionné présent dans le checkout :
-
-```bash
-if ! sudo -v; then
-  echo "Authentification sudo impossible; aucune modification effectuée." >&2
-  exit 1
+if sudo -v; then
+  sudo apt-get update &&
+  sudo apt-get install -y git ca-certificates &&
+  git clone https://github.com/ecourn/ubuntu-dev-environment.git ~/ubuntu-dev-environment &&
+  cd ~/ubuntu-dev-environment &&
+  sudo bash ./01-preparation-utilisateur/setup-ubuntu-user.sh
 fi
-
-if ! command -v git >/dev/null 2>&1; then
-  sudo apt-get update
-  sudo apt-get upgrade -y
-  sudo apt-get install -y git ca-certificates unzip vim-gtk3
-fi
-
-git clone https://github.com/ecourn/ubuntu-dev-environment.git ~/ubuntu-dev-environment
-cd ~/ubuntu-dev-environment
-sudo bash ./01-preparation-utilisateur/setup-ubuntu-user.sh
 ```
 
-ensuite (toujours sur root) :
+Quand le script le demande, collez **la clé publique OpenSSH**, jamais la `.ppk`. Gardez cette session ouverte. Depuis votre PC, ouvrez une nouvelle connexion PuTTY avec l’utilisateur `ubuntu` et votre `.ppk`. Continuez seulement si elle fonctionne. [Détails de l’étape 1](01-preparation-utilisateur/README.md).
 
-```bash
-cd
-rm -fr -- ~/ubuntu-dev-environment
-```
+## 2. Sécuriser le serveur (nouvelle session `ubuntu`)
 
-Le script installe uniquement des **clés publiques OpenSSH** dans `authorized_keys`. Gardez la session initiale ouverte. Ouvrez ensuite une deuxième fenêtre PuTTY avec l’utilisateur `ubuntu` et la clé privée `.ppk` conservée sur Windows. Ne poursuivez que si cette connexion réussit réellement depuis le poste client.
-
-## 2. Configurer le serveur et durcir SSH
-
-Après avoir vérifié une connexion PuTTY par clé avec le compte `ubuntu`, lancez le point d’entrée de l’étape 2 depuis la racine du dépôt :
+Dans la session `ubuntu` que vous venez de tester :
 
 ```bash
 git clone https://github.com/ecourn/ubuntu-dev-environment.git ~/ubuntu-dev-environment
 cd ~/ubuntu-dev-environment
-```
-
-```bash
 sudo env SSH_CONNECTION="${SSH_CONNECTION:-}" \
-  bash ./02-configuration-serveur/configuration-serveur.sh \
-  --user ubuntu
+  bash ./02-configuration-serveur/configuration-serveur.sh --user ubuntu
 ```
 
+Le script affiche le port SSH choisi. Si votre hébergeur a un pare-feu réseau, autorisez ce port **avant de confirmer** et gardez l’ancien ouvert. Lorsque le script le demande, testez depuis votre PC une deuxième connexion PuTTY sur ce port ; tapez `oui` uniquement si elle fonctionne.
+
 > [!IMPORTANT]
-> **Conservez impérativement le numéro `Port SSH : ...` affiché à la fin de la commande : c'est le port SSH définitif du serveur.** Ne fermez pas votre session actuelle. Une fois la commande complètement terminée, ouvrez depuis votre poste Windows une **nouvelle** connexion PuTTY avec l'utilisateur `ubuntu`, la même clé privée `.ppk` déjà validée et ce port final. Vérifiez que cette connexion fraîche fonctionne réellement, puis enregistrez le nouveau port dans votre session PuTTY. **Fermez l'ancienne session seulement après cette vérification.** Sauf utilisation volontaire de `--keep-old-port`, les prochaines connexions ne doivent plus utiliser l'ancien port. Même avec cette option, utilisez le port final : elle conserve des règles UFW, sans garantir une écoute SSH sur l'ancien port.
+> Conservez le `Port SSH : ...` final. Sans fermer la session actuelle, ouvrez une nouvelle connexion PuTTY avec la même `.ppk` sur ce port. Fermez l’ancienne session seulement après ce test. Passez à l’étape 3 après cette vérification.
 
-Cette étape règle la locale et le fuseau horaire, puis configure SSH, UFW et Fail2ban. Gardez la première session ouverte et suivez le [guide détaillé de l’étape 2](02-configuration-serveur/README.md) : il demande une deuxième connexion depuis votre poste avant de confirmer les changements. UFW applique une politique entrante restrictive ; vérifiez les ports de vos autres services et les règles du fournisseur.
+[Détails de l’étape 2](02-configuration-serveur/README.md).
 
-## 3. Installer l’environnement de développement
+## 3. Installer les outils (connexion `ubuntu` sur le port final)
 
-Ne commencez l'étape 3 qu'après la fin complète du script de l'étape 2, la conservation du port SSH final affiché et la validation d'une nouvelle connexion SSH fraîche sur ce port. Lancez idéalement l'installation depuis cette nouvelle session :
+Lancez l’installateur **sans `sudo`** :
 
 ```bash
 python3 ~/ubuntu-dev-environment/03-environnement-de-developpement/install_dev_environment.py
 ```
 
-Voir le [README de l’environnement de développement](03-environnement-de-developpement/README.md).
+Suivez les demandes pour l’identité Git et l’accès GitHub. Ouvrez ensuite un nouveau terminal pour charger les outils installés. [Outils et options de l’étape 3](03-environnement-de-developpement/README.md).
 
-## Sécurité et récupération
-
-Gardez un accès console de secours pendant le durcissement. En cas de refus de la deuxième connexion SSH, ne confirmez pas les changements : le script restaure les configurations SSH, UFW et Fail2ban qu’il gère. Consultez [SECURITY.md](SECURITY.md) pour les effets et limites de cette restauration.
+En cas d’échec SSH, gardez toute session encore ouverte et utilisez la console de secours. Voir [sécurité et récupération](SECURITY.md).
