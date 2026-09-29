@@ -50,6 +50,13 @@ cd ~/ubuntu-dev-environment
 sudo bash ./01-preparation-utilisateur/setup-ubuntu-user.sh
 ```
 
+ensuite (toujours sur root) :
+
+```bash
+cd
+rm -fr -- ~/ubuntu-dev-environment
+```
+
 Le script installe uniquement des **clés publiques OpenSSH** dans `authorized_keys`. Gardez la session initiale ouverte. Ouvrez ensuite une deuxième fenêtre PuTTY avec l’utilisateur `ubuntu` et la clé privée `.ppk` conservée sur Windows. Ne poursuivez que si cette connexion réussit réellement depuis le poste client.
 
 ## 2. Configurer le serveur et durcir SSH
