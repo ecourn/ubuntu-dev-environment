@@ -57,6 +57,11 @@ Le script installe uniquement des **clés publiques OpenSSH** dans `authorized_k
 Après avoir vérifié une connexion PuTTY par clé avec le compte `ubuntu`, lancez le point d’entrée de l’étape 2 depuis la racine du dépôt :
 
 ```bash
+git clone https://github.com/ecourn/ubuntu-dev-environment.git ~/ubuntu-dev-environment
+cd ~/ubuntu-dev-environment
+```
+
+```bash
 sudo env SSH_CONNECTION="${SSH_CONNECTION:-}" \
   bash ./02-configuration-serveur/configuration-serveur.sh \
   --user ubuntu
