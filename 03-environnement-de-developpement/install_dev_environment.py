@@ -84,7 +84,7 @@ def resolve_target_user(
         if not username or username == "root" or not uid_text.isdigit():
             raise InstallError(
                 "Lancé en root sans identité SUDO_USER/SUDO_UID fiable; "
-                "exécutez le script depuis votre compte avec sudo."
+                "exécutez le script depuis votre compte sans sudo."
             )
         try:
             record = lookup_by_name(username)
@@ -235,11 +235,19 @@ def select_latest_node_lts(releases: list[dict], distribution: str) -> tuple[str
     if distribution not in ("linux-x64", "linux-arm64"):
         raise InstallError(f"Distribution Node.js non prise en charge : {distribution}.")
     candidates: list[tuple[tuple[int, int, int], str]] = []
+    if not isinstance(releases, list):
+        raise InstallError("Index Node.js invalide.")
     for release in releases:
+        if not isinstance(release, dict):
+            raise InstallError("Entrée de l'index Node.js invalide.")
         version = release.get("version", "")
         parsed = _parse_stable_version(version)
         if parsed is None or release.get("lts") in (False, None, ""):
             continue
+        if (not isinstance(version, str) or not isinstance(release.get("lts"), str)
+                or not isinstance(release.get("files"), list)
+                or any(not isinstance(item, str) for item in release["files"])):
+            raise InstallError("Métadonnées Node.js LTS invalides.")
         if distribution not in release.get("files", []):
             continue
         candidates.append((parsed, version.removeprefix("v").removeprefix("V")))
@@ -253,6 +261,8 @@ def select_latest_node_lts(releases: list[dict], distribution: str) -> tuple[str
 
 def select_latest_compatible_package(packument: dict, node_version: str) -> str:
     """Choose the newest stable npm release at or below the registry's latest tag."""
+    if not isinstance(packument, dict):
+        raise InstallError("Métadonnées du registre npm invalides.")
     versions = packument.get("versions")
     tags = packument.get("dist-tags")
     if not isinstance(versions, dict) or not isinstance(tags, dict):
@@ -267,7 +277,9 @@ def select_latest_compatible_package(packument: dict, node_version: str) -> str:
         if not isinstance(metadata, dict) or metadata.get("deprecated"):
             return False
         engines = metadata.get("engines", {})
-        engine_range = engines.get("node") if isinstance(engines, dict) else None
+        if not isinstance(engines, dict):
+            raise InstallError("La contrainte engines du paquet npm est invalide.")
+        engine_range = engines.get("node")
         if engine_range is None:
             return True
         return is_version_compatible(node_version, engine_range)
@@ -290,10 +302,12 @@ def select_latest_compatible_package(packument: dict, node_version: str) -> str:
     )
 
 
-def extract_archive_member(data: bytes | Path, archive_format: str, basename: str) -> bytes:
+def extract_archive_member(data: bytes | Path, archive_format: str, basename: str, *, max_binary_bytes: int = 250_000_000) -> bytes:
     """Read one safe regular-file member without extracting archive paths to disk."""
     if archive_format not in {"tar.gz", "zip"} or not re.fullmatch(r"[A-Za-z0-9._+-]+", basename):
         raise InstallError("Format ou nom de binaire d'archive invalide.")
+    if not isinstance(max_binary_bytes, int) or not 0 < max_binary_bytes <= 350_000_000:
+        raise InstallError("Limite de taille du binaire invalide.")
     matches: list[bytes] = []
 
     def validate_name(name: str) -> PurePosixPath:
@@ -315,10 +329,10 @@ def extract_archive_member(data: bytes | Path, archive_format: str, basename: st
                     if stat.S_IFMT(mode) and not stat.S_ISREG(mode):
                         raise InstallError("L'archive contient un membre non régulier refusé.")
                     if path.name == basename:
-                        if info.file_size <= 0 or info.file_size > 250_000_000:
+                        if info.file_size <= 0 or info.file_size > max_binary_bytes:
                             raise InstallError(f"Taille invalide pour le binaire {basename}.")
                         with zip_archive.open(info, "r") as stream:
-                            matches.append(stream.read(250_000_001))
+                            matches.append(stream.read(max_binary_bytes + 1))
         else:
             with tarfile.open(name=str(data) if isinstance(data, Path) else None,
                               fileobj=None if isinstance(data, Path) else io.BytesIO(data), mode="r:gz") as tar_archive:
@@ -329,17 +343,17 @@ def extract_archive_member(data: bytes | Path, archive_format: str, basename: st
                     if member.issym() or member.islnk() or not member.isfile():
                         raise InstallError("L'archive contient un type de fichier non admis.")
                     if path.name == basename:
-                        if member.size <= 0 or member.size > 250_000_000:
+                        if member.size <= 0 or member.size > max_binary_bytes:
                             raise InstallError(f"Taille invalide pour le binaire {basename}.")
                         member_stream = tar_archive.extractfile(member)
                         if member_stream is None:
                             raise InstallError(f"Binaire {basename} illisible dans l'archive.")
                         with member_stream:
-                            matches.append(member_stream.read(250_000_001))
+                            matches.append(member_stream.read(max_binary_bytes + 1))
     except (OSError, tarfile.TarError, zipfile.BadZipFile) as exc:
         raise InstallError(f"Archive {archive_format} invalide ou tronquée.") from exc
 
-    if len(matches) != 1 or len(matches[0]) > 250_000_000:
+    if len(matches) != 1 or len(matches[0]) > max_binary_bytes:
         raise InstallError(f"Binaire {basename} absent ou ambigu dans l'archive.")
     return matches[0]
 
@@ -364,7 +378,7 @@ def select_release_asset(release: dict, repository: str, asset_name: str) -> dic
         )
     asset = matches[0]
     digest = asset.get("digest")
-    digest_match = re.fullmatch(r"sha256:([0-9a-fA-F]{64})", digest or "")
+    digest_match = re.fullmatch(r"sha256:([0-9a-fA-F]{64})", digest) if isinstance(digest, str) else None
     if not digest_match:
         raise InstallError(
             f"Aucun checksum SHA-256 officiel vérifiable pour {repository}/{asset_name}."
@@ -374,7 +388,7 @@ def select_release_asset(release: dict, repository: str, asset_name: str) -> dic
     if not isinstance(url, str) or not url.startswith(expected_prefix) or url[len(expected_prefix):] != asset_name:
         raise InstallError(f"URL d'asset inattendue pour {repository}/{asset_name}.")
     size = asset.get("size")
-    if not isinstance(size, int) or size <= 0 or size > 250_000_000:
+    if type(size) is not int or size <= 0 or size > 250_000_000:
         raise InstallError(f"Taille d'asset invalide pour {repository}/{asset_name}.")
     return {
         "name": asset_name,
@@ -492,23 +506,48 @@ TRUSTED_HOSTS = {
     "github.com", "release-assets.githubusercontent.com", "objects.githubusercontent.com",
     "deb.nodesource.com", "download.docker.com", "cli.github.com",
 }
+def _validate_https_url(url: str) -> urllib.parse.SplitResult:
+    """Validate URLs before requests, including every redirect hop."""
+    if not isinstance(url, str) or any(ord(character) <= 32 or ord(character) == 127 for character in url):
+        raise InstallError("URL HTTPS invalide.")
+    try:
+        parsed = urllib.parse.urlsplit(url)
+        valid = (parsed.scheme == "https" and parsed.hostname in TRUSTED_HOSTS
+                 and parsed.username is None and parsed.password is None
+                 and parsed.port in (None, 443))
+    except (ValueError, TypeError) as exc:
+        raise InstallError("URL HTTPS invalide.") from exc
+    if not valid:
+        raise InstallError("URL HTTPS absente de la liste des sources approuvées.")
+    return parsed
+
+
+class _TrustedHTTPSRedirectHandler(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        _validate_https_url(newurl)
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
+def _open_https(request: urllib.request.Request, *, timeout: int):
+    _validate_https_url(request.full_url)
+    return urllib.request.build_opener(_TrustedHTTPSRedirectHandler()).open(request, timeout=timeout)
 
 
 def fetch_https_bytes(url: str, *, accept: str = "*/*", max_bytes: int = 20_000_000) -> bytes:
     """Fetch a bounded HTTPS response from a hardcoded trusted project host."""
-    parsed = urllib.parse.urlsplit(url)
-    if parsed.scheme != "https" or parsed.hostname not in TRUSTED_HOSTS or parsed.username or parsed.password:
-        raise InstallError("URL HTTPS absente de la liste des sources approuvées.")
+    parsed = _validate_https_url(url)
+    if type(max_bytes) is not int or max_bytes <= 0:
+        raise InstallError("Limite de taille HTTPS invalide.")
     request = urllib.request.Request(
         url,
         headers={"User-Agent": "ubuntu-dev-environment/1.0", "Accept": accept},
     )
     for attempt in range(3):
         try:
-            with urllib.request.urlopen(request, timeout=30) as response:
-                final = urllib.parse.urlsplit(response.geturl())
-                if final.scheme != "https" or final.hostname not in TRUSTED_HOSTS:
-                    raise InstallError("La redirection HTTPS mène vers une source non approuvée.")
+            with _open_https(request, timeout=30) as response:
+                _validate_https_url(response.geturl())
+                if getattr(response, "status", 200) != 200:
+                    raise InstallError("Statut de réponse HTTPS inattendu.")
                 data = response.read(max_bytes + 1)
                 if not data:
                     raise InstallError(f"Réponse HTTPS vide depuis {parsed.hostname}.")
@@ -516,6 +555,7 @@ def fetch_https_bytes(url: str, *, accept: str = "*/*", max_bytes: int = 20_000_
                     raise InstallError(f"Réponse trop volumineuse depuis {parsed.hostname}.")
                 return data
         except urllib.error.HTTPError as exc:
+            exc.close()
             if exc.code in (429, 500, 502, 503, 504) and attempt < 2:
                 time.sleep(1 << attempt)
                 continue
@@ -530,11 +570,9 @@ def fetch_https_bytes(url: str, *, accept: str = "*/*", max_bytes: int = 20_000_
 
 def download_verified_file(url: str, destination: Path, size: int, sha256: str) -> None:
     """Stream an official asset to a private file; publish only after verification."""
-    parsed = urllib.parse.urlsplit(url)
-    if (parsed.scheme != "https" or parsed.hostname not in TRUSTED_HOSTS
-            or parsed.username or parsed.password or parsed.port not in (None, 443)):
-        raise InstallError("URL d'asset non approuvée.")
-    if not 0 < size <= 250_000_000 or not re.fullmatch(r"[0-9a-fA-F]{64}", sha256):
+    _validate_https_url(url)
+    if (type(size) is not int or not 0 < size <= 250_000_000
+            or not isinstance(sha256, str) or not re.fullmatch(r"[0-9a-fA-F]{64}", sha256)):
         raise InstallError("Taille ou SHA-256 d'asset invalide.")
     request = urllib.request.Request(url, headers={
         "User-Agent": "ubuntu-dev-environment/1.0", "Accept": "application/octet-stream",
@@ -545,9 +583,9 @@ def download_verified_file(url: str, destination: Path, size: int, sha256: str) 
         digest = hashlib.sha256()
         count = 0
         with os.fdopen(fd, "wb") as stream:
-            with urllib.request.urlopen(request, timeout=60) as response:
-                final = urllib.parse.urlsplit(response.geturl())
-                if final.scheme != "https" or final.hostname not in TRUSTED_HOSTS or getattr(response, "status", 200) != 200:
+            with _open_https(request, timeout=60) as response:
+                _validate_https_url(response.geturl())
+                if getattr(response, "status", 200) != 200:
                     raise InstallError("Redirection ou statut d'asset non approuvé.")
                 while True:
                     chunk = response.read(min(1_048_576, size - count + 1))
@@ -587,28 +625,23 @@ def fetch_https_json(url: str, *, accept: str = "application/json", max_bytes: i
 
 def probe_https_url(url: str) -> None:
     """Confirm a remote repository index exists without trusting it as an APT key."""
-    parsed = urllib.parse.urlsplit(url)
-    if parsed.scheme != "https" or parsed.hostname not in TRUSTED_HOSTS:
-        raise InstallError("URL de dépôt non approuvée.")
+    parsed = _validate_https_url(url)
     request = urllib.request.Request(
         url, method="HEAD", headers={"User-Agent": "ubuntu-dev-environment/1.0"}
     )
     try:
-        with urllib.request.urlopen(request, timeout=20) as response:
-            final = urllib.parse.urlsplit(response.geturl())
-            if response.status != 200 or final.scheme != "https" or final.hostname not in TRUSTED_HOSTS:
+        with _open_https(request, timeout=20) as response:
+            _validate_https_url(response.geturl())
+            if response.status != 200:
                 raise InstallError(f"Dépôt officiel indisponible: {parsed.hostname}.")
     except urllib.error.HTTPError as exc:
+        exc.close()
         if exc.code not in (405, 501):
             raise InstallError(f"Dépôt officiel indisponible (HTTP {exc.code}): {parsed.hostname}.") from exc
         try:
-            with urllib.request.urlopen(urllib.request.Request(url, headers={"Range": "bytes=0-0"}), timeout=20) as response:
-                final = urllib.parse.urlsplit(response.geturl())
-                if (
-                    response.status not in (200, 206)
-                    or final.scheme != "https"
-                    or final.hostname not in TRUSTED_HOSTS
-                ):
+            with _open_https(urllib.request.Request(url, headers={"Range": "bytes=0-0"}), timeout=20) as response:
+                _validate_https_url(response.geturl())
+                if response.status not in (200, 206):
                     raise InstallError(f"Dépôt officiel indisponible: {parsed.hostname}.")
         except (urllib.error.URLError, TimeoutError, OSError) as fallback_exc:
             raise InstallError(f"Dépôt officiel inaccessible: {parsed.hostname}.") from fallback_exc
@@ -645,6 +678,8 @@ def parse_ubuntu_csv_support(csv_text: str, codename: str, version_id: str, toda
 
 def release_version_from_tag(tag: str, prefix: str = "") -> str:
     """Validate and normalize a stable semantic version embedded in a release tag."""
+    if not isinstance(tag, str):
+        raise InstallError("Tag de publication invalide.")
     if prefix and not tag.startswith(prefix):
         raise InstallError(f"Tag de publication inattendu: {tag!r}.")
     version = tag[len(prefix):] if prefix else tag
@@ -1003,7 +1038,14 @@ class UbuntuBootstrap:
 
     def _load_manifest(self) -> None:
         with self.target_file_privileges():
-            if self.prefix.exists() and (self.prefix.is_symlink() or not self.prefix.is_dir()):
+            for path in (self.prefix / "bin", self.state_path.parent):
+                for parent in (path, *path.parents):
+                    if parent == self.home.parent:
+                        break
+                    if parent.is_symlink() or (parent.exists() and (
+                            not parent.is_dir() or parent.stat().st_uid != self.target.uid)):
+                        raise InstallError(f"Répertoire d'état utilisateur non sûr: {parent}.")
+            if self.prefix.is_symlink() or (self.prefix.exists() and not self.prefix.is_dir()):
                 raise InstallError("Le répertoire dédié dev-bootstrap existe mais n'est pas un dossier sûr.")
             if self.prefix.exists() and self.prefix.stat().st_uid != self.target.uid:
                 raise InstallError("Le répertoire dev-bootstrap n'appartient pas au compte cible.")
@@ -1014,10 +1056,16 @@ class UbuntuBootstrap:
                     raise InstallError("Le manifeste dev-bootstrap n'est pas un fichier utilisateur sûr.")
                 try:
                     manifest = json.loads(self.state_path.read_text(encoding="utf-8"))
-                except (OSError, json.JSONDecodeError) as exc:
+                except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
                     raise InstallError("Le manifeste dev-bootstrap est illisible ou invalide.") from exc
-                if not isinstance(manifest, dict) or manifest.get("schema") not in (1, 2) or not isinstance(manifest.get("tools"), dict):
+                if (not isinstance(manifest, dict) or type(manifest.get("schema")) is not int
+                        or manifest.get("schema") not in (1, 2) or not isinstance(manifest.get("tools"), dict)):
                     raise InstallError("Schéma du manifeste dev-bootstrap inconnu; aucune mise à jour effectuée.")
+                for name, record in manifest["tools"].items():
+                    if (not isinstance(name, str) or not re.fullmatch(r"[a-z][a-z0-9-]*", name)
+                            or not isinstance(record, dict) or not isinstance(record.get("sha256"), str)
+                            or not re.fullmatch(r"[0-9a-f]{64}", record["sha256"])):
+                        raise InstallError("Entrée de manifeste invalide; aucune mise à jour effectuée.")
                 manifest["schema"] = 2  # Legacy v1 is migrated only when a write is needed.
                 self.manifest = manifest
             else:
@@ -1044,7 +1092,10 @@ class UbuntuBootstrap:
                 if path.is_symlink():
                     if os.readlink(path) != record.get("link"):
                         raise InstallError(f"Lien géré modifié: {path}.")
-                    resolved = path.resolve(strict=True)
+                    try:
+                        resolved = path.resolve(strict=True)
+                    except (OSError, RuntimeError) as exc:
+                        raise InstallError(f"Lien géré cassé ou cyclique: {path}.") from exc
                     if not resolved.is_relative_to(self.prefix.resolve()) or self._file_sha256(resolved) != record["sha256"]:
                         raise InstallError(f"Binaire géré modifié: {path}.")
                 elif (not path.is_file() or path.stat().st_uid != self.target.uid
@@ -1126,6 +1177,8 @@ class UbuntuBootstrap:
             accept="application/vnd.github+json",
             max_bytes=5_000_000,
         )
+        if not isinstance(release, dict):
+            raise InstallError(f"Publication GitHub invalide pour {repository}.")
         version = release_version_from_tag(release.get("tag_name", ""), prefix)
         asset = select_release_asset(release, repository, asset_name)
         return {"version": version, "repository": repository, "asset": asset}
@@ -1168,6 +1221,12 @@ class UbuntuBootstrap:
             fzf_arch = "arm64"
         self.plan["bun"] = self._resolve_release("oven-sh/bun", bun_asset, "bun-v")
         self.plan["uv"] = self._resolve_release("astral-sh/uv", uv_asset)
+        codex_arch = "x86_64" if self.arch == "amd64" else "aarch64"
+        codex_binary = f"codex-{codex_arch}-unknown-linux-musl"
+        self.plan["codex"] = self._resolve_release(
+            "openai/codex", f"{codex_binary}.tar.gz", "rust-v",
+        )
+        self.plan["codex"]["binary"] = codex_binary
         zoxide_release = fetch_https_json(
             f"{GITHUB_API}/ajeetdsouza/zoxide/releases/latest",
             accept="application/vnd.github+json", max_bytes=5_000_000,
@@ -1236,7 +1295,7 @@ class UbuntuBootstrap:
 
     def print_plan(self) -> None:
         print("\nVersions stables résolues (aucune modification effectuée):")
-        for tool in ("node", "npm", "pnpm", "bun", "uv", "zoxide", "fzf", "gh"):
+        for tool in ("node", "npm", "pnpm", "bun", "uv", "zoxide", "fzf", "codex", "gh"):
             value = self.plan[tool] if isinstance(self.plan.get(tool), str) else self.plan[tool]["version"]
             print(f"  {tool}: {value}")
         print("  APT: candidat installable non vérifié en mode à blanc; Node/GitHub ci-dessus sont les dernières releases amont.")
@@ -1590,8 +1649,8 @@ class UbuntuBootstrap:
             self.status[package] = "déjà conforme" if before == after else ("mis à jour" if before else "installé")
 
     def _prepare_codex_sandbox(self) -> None:
-        """Prepare Ubuntu's bwrap sandbox prerequisite without installing Codex."""
-        self.set_step("préparation du bac à sable Linux pour une installation future de Codex")
+        """Prepare Ubuntu's bwrap sandbox prerequisite for Codex."""
+        self.set_step("préparation du bac à sable Linux pour Codex")
         before = self._package_installed_version("bubblewrap")
         self._safe_apt_install(["bubblewrap"], "installation de bubblewrap depuis Ubuntu")
         if self._package_installed_version("bubblewrap") is None:
@@ -1653,7 +1712,7 @@ class UbuntuBootstrap:
     def download_verified_artifacts(self) -> None:
         self.set_step("téléchargement et vérification SHA-256 des binaires officiels")
         self.artifacts: dict[str, Path] = {}
-        for tool in ("bun", "uv", "zoxide", "fzf"):
+        for tool in ("bun", "uv", "zoxide", "fzf", "codex"):
             asset = self.plan[tool]["asset"]
             destination = Path(self._artifact_directory) / tool
             download_verified_file(
@@ -1662,13 +1721,16 @@ class UbuntuBootstrap:
             self.artifacts[tool] = destination
 
     def _ensure_user_directory(self, path: Path, mode: int = 0o755) -> None:
+        if not path.is_relative_to(self.home) or ".." in path.parts:
+            raise InstallError(f"Répertoire hors du répertoire utilisateur: {path}.")
         with self.target_file_privileges():
             chain = [path, *path.parents]
             for item in chain:
                 if item == self.home.parent:
                     break
-                if item.exists() and item.is_symlink():
-                    raise InstallError(f"Répertoire utilisateur symbolique refusé: {item}.")
+                if item.is_symlink() or (item.exists() and (
+                        not item.is_dir() or item.stat().st_uid != self.target.uid)):
+                    raise InstallError(f"Répertoire utilisateur non sûr: {item}.")
             existed = path.exists()
             path.mkdir(mode=mode, parents=True, exist_ok=True)
             if not path.is_dir() or path.stat().st_uid != self.target.uid:
@@ -1681,7 +1743,7 @@ class UbuntuBootstrap:
         fsync_directory(path)
 
     def _atomic_user_write(self, path: Path, data: bytes, mode: int = 0o644) -> None:
-        if not path.is_relative_to(self.home):
+        if not path.is_relative_to(self.home) or ".." in path.parts:
             raise InstallError(f"Écriture hors du répertoire utilisateur: {path}.")
         self._ensure_user_directory(path.parent, 0o700)
         with self.target_file_privileges():
@@ -1728,6 +1790,51 @@ class UbuntuBootstrap:
             raise InstallError(f"L'exécutable {label} ne peut pas être vérifié.")
         return extract_display_version(result.stdout)
 
+    def _check_pending_binary(self) -> bool:
+        """Validate an interrupted publication independently of today's release plan."""
+        pending = self.manifest.get("pending_binary")
+        if pending is None:
+            return False
+        if (not isinstance(pending, dict) or set(pending) != {"name", "version", "sha256"}
+                or not isinstance(pending.get("name"), str)
+                or pending.get("name") not in {"bun", "uv", "uvx", "zoxide", "fzf", "codex"}
+                or not isinstance(pending.get("version"), str)
+                or _parse_stable_version(pending["version"]) is None
+                or not isinstance(pending.get("sha256"), str)
+                or not re.fullmatch(r"[0-9a-f]{64}", pending["sha256"])):
+            raise InstallError("Transaction binaire en attente invalide.")
+        path = self.bin_dir / pending["name"]
+        old = self.manifest["tools"].get(pending["name"])
+        if path.is_symlink():
+            raise InstallError(f"Cible binaire en attente symbolique: {path}.")
+        if not path.exists():
+            if old is not None:
+                raise InstallError(f"Ancien binaire en attente absent: {path}.")
+            return False
+        if not path.is_file() or path.stat().st_uid != self.target.uid:
+            raise InstallError(f"Cible binaire en attente non sûre: {path}.")
+        digest = self._file_sha256(path)
+        if digest == pending["sha256"]:
+            return True
+        if not isinstance(old, dict) or digest != old.get("sha256"):
+            raise InstallError(f"Binaire en attente modifié hors script: {path}.")
+        return False
+
+    def _recover_pending_binary(self) -> None:
+        pending = self.manifest.get("pending_binary")
+        if pending is None:
+            return
+        published = self._check_pending_binary()
+        if published:
+            path = self.bin_dir / pending["name"]
+            if self._version_at_path(path, pending["name"]) != pending["version"]:
+                raise InstallError(f"Binaire publié mais version invalide: {path}.")
+            self.manifest["tools"][pending["name"]] = {
+                "version": pending["version"], "sha256": pending["sha256"],
+            }
+        self.manifest.pop("pending_binary")
+        self._save_manifest()
+
     def _install_managed_binary(self, name: str, version: str, data: bytes) -> str:
         self._ensure_user_directory(self.bin_dir)
         destination = self.bin_dir / name
@@ -1746,7 +1853,7 @@ class UbuntuBootstrap:
                     self.manifest.pop("pending_binary")
                     self._save_manifest()
                     return "mis à jour" if isinstance(record, dict) else "installé"
-        if destination.exists():
+        if destination.exists() or destination.is_symlink():
             if destination.is_symlink() or not destination.is_file():
                 raise InstallError(f"La cible utilisateur {destination} n'est pas un binaire régulier.")
             if not isinstance(record, dict):
@@ -1798,7 +1905,7 @@ class UbuntuBootstrap:
         return outcome
 
     def _install_release_tools(self) -> None:
-        self.set_step("installation des versions stables Bun, uv, zoxide et fzf")
+        self.set_step("installation des versions stables Bun, uv, zoxide, fzf et Codex")
         bun_version = self.plan["bun"]["version"]
         bun = extract_archive_member(self.artifacts["bun"], "zip", "bun")
         self.status["bun"] = self._install_managed_binary("bun", bun_version, bun)
@@ -1817,6 +1924,14 @@ class UbuntuBootstrap:
             binary = extract_archive_member(self.artifacts[tool], "tar.gz", tool)
             self.status[tool] = self._install_managed_binary(tool, version, binary)
             self.verified_versions[tool] = version
+
+        codex_version = self.plan["codex"]["version"]
+        codex = extract_archive_member(
+            self.artifacts["codex"], "tar.gz", self.plan["codex"]["binary"],
+            max_binary_bytes=350_000_000,
+        )
+        self.status["codex"] = self._install_managed_binary("codex", codex_version, codex)
+        self.verified_versions["Codex CLI"] = codex_version
 
     def _tool_version(self, name: str) -> str | None:
         executable = shutil.which(name, path=self.target_path)
@@ -1893,6 +2008,7 @@ class UbuntuBootstrap:
 
     def _check_npm_prefix(self) -> None:
         """Reject unknown prefix contents before npm can rewrite any of them."""
+        self._check_pending_binary()
         if not self.prefix.exists():
             return
         if self.prefix.is_symlink() or not self.prefix.is_dir() or self.prefix.stat().st_uid != self.target.uid:
@@ -1900,7 +2016,7 @@ class UbuntuBootstrap:
         for parent, names in ((self.prefix, {"bin", "lib"}),
                               (self.prefix / "lib", {"node_modules"}),
                               (self.prefix / "lib" / "node_modules", {"npm", "pnpm"})):
-            if parent.exists():
+            if parent.exists() or parent.is_symlink():
                 if parent.is_symlink() or not parent.is_dir() or parent.stat().st_uid != self.target.uid:
                     raise InstallError(f"Répertoire npm non sûr: {parent}.")
                 if {p.name for p in parent.iterdir()} - names:
@@ -1924,10 +2040,12 @@ class UbuntuBootstrap:
                     raise InstallError(f"Paquet npm {name} absent du manifeste ou modifié; refus d'écraser.")
             elif name in package_records or name in pending_packages:
                 raise InstallError(f"Paquet npm {name} absent malgré son inventaire.")
-        if self.bin_dir.exists():
+        if self.bin_dir.exists() or self.bin_dir.is_symlink():
             if self.bin_dir.is_symlink() or not self.bin_dir.is_dir() or self.bin_dir.stat().st_uid != self.target.uid:
                 raise InstallError("Répertoire binaire npm non sûr.")
-            if {p.name for p in self.bin_dir.iterdir()} - set(self.manifest.get("tools", {})) - set(pending_bins):
+            pending_binary = self.manifest.get("pending_binary", {})
+            pending_names = {pending_binary["name"]} if pending_binary else set()
+            if {p.name for p in self.bin_dir.iterdir()} - set(self.manifest.get("tools", {})) - set(pending_bins) - pending_names:
                 raise InstallError("Binaire non suivi dans le préfixe npm.")
             for name, record in pending_bins.items():
                 if not isinstance(record, dict) or record != self._npm_binary_snapshot(name):
@@ -2383,6 +2501,7 @@ class UbuntuBootstrap:
         uv = self._verify_command_version("uv", self.plan["uv"]["version"], ["uv", "--version"])
         zoxide = self._verify_command_version("zoxide", self.plan["zoxide"]["version"], ["zoxide", "--version"])
         fzf = self._verify_command_version("fzf", self.plan["fzf"]["version"], ["fzf", "--version"])
+        codex = self._verify_command_version("Codex CLI", self.plan["codex"]["version"], ["codex", "--version"])
         gh = self._verify_command_version("GitHub CLI", self.plan["gh"], ["gh", "--version"])
         docker_expected = self._semver_from_package_version(self.apt_candidates["docker-ce"])
         compose_expected = self._semver_from_package_version(self.apt_candidates["docker-compose-plugin"])
@@ -2412,7 +2531,7 @@ class UbuntuBootstrap:
         self.verified_versions.update({
             "Node.js": node, "npm": npm, "pnpm": pnpm, "Bun": bun, "uv": uv,
             "Docker Engine": docker, "Docker Compose": compose, "GitHub CLI": gh,
-            "zoxide": zoxide, "fzf": fzf,
+            "zoxide": zoxide, "fzf": fzf, "Codex CLI": codex,
         })
 
     def print_report(self) -> None:
@@ -2420,7 +2539,7 @@ class UbuntuBootstrap:
             ("Node.js", "nodejs"), ("npm", "npm"), ("pnpm", "pnpm"),
             ("Bun", "bun"), ("uv", "uv"), ("Docker Engine", "docker-ce"),
             ("Docker Compose", "docker-compose-plugin"), ("GitHub CLI", "gh"),
-            ("zoxide", "zoxide"), ("fzf", "fzf"),
+            ("zoxide", "zoxide"), ("fzf", "fzf"), ("Codex CLI", "codex"),
         ]
         print("\nBilan final:")
         for label, key in rows:
@@ -2444,6 +2563,7 @@ class UbuntuBootstrap:
             if self.dry_run:
                 self.print_plan()
                 return 0
+            self._recover_pending_binary()
             with tempfile.TemporaryDirectory(prefix="dev-bootstrap-assets-") as artifact_directory:
                 self._artifact_directory = artifact_directory
                 self.download_verified_artifacts()

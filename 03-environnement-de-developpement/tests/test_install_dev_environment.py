@@ -497,7 +497,7 @@ class BootstrapSafetyTests(unittest.TestCase):
                 return original_replace(source, destination)
             with patch("install_dev_environment.os.fsync", side_effect=fsync), \
                  patch("install_dev_environment.os.replace", side_effect=replace), \
-                 patch("install_dev_environment.urllib.request.urlopen", return_value=Response(payload)):
+                 patch("install_dev_environment._open_https", return_value=Response(payload)):
                 install_dev_environment.download_verified_file(
                     Response().geturl(), Path(directory) / "asset", len(payload), hashlib.sha256(payload).hexdigest(),
                 )
@@ -688,7 +688,7 @@ class BootstrapSafetyTests(unittest.TestCase):
         bootstrap = UbuntuBootstrap.__new__(UbuntuBootstrap)
         bootstrap.plan = {"node": "24.2.0", "npm": "11.0.0", "pnpm": "10.0.0",
                           "bun": {"version": "1.0.0"}, "uv": {"version": "1.0.0"},
-                          "zoxide": {"version": "1.0.0"}, "fzf": {"version": "1.0.0"}, "gh": "2.0.0"}
+                          "zoxide": {"version": "1.0.0"}, "fzf": {"version": "1.0.0"}, "codex": {"version": "1.0.0"}, "gh": "2.0.0"}
         bootstrap.version_id, bootstrap.codename, bootstrap.arch = "24.04", "noble", "amd64"
         bootstrap.gh_authenticated = False
         output = StringIO()
@@ -1536,6 +1536,173 @@ class SystemCommandTests(unittest.TestCase):
         self.assertIn("--no-options", run.call_args.args[0])
 
 
+class AdversarialStateTests(unittest.TestCase):
+    def setUp(self):
+        self.directory = tempfile.TemporaryDirectory()
+        self.addCleanup(self.directory.cleanup)
+        home = Path(self.directory.name)
+        self.bootstrap = UbuntuBootstrap.__new__(UbuntuBootstrap)
+        self.bootstrap.home = home
+        self.bootstrap.prefix = home / ".local/share/dev-bootstrap"
+        self.bootstrap.bin_dir = self.bootstrap.prefix / "bin"
+        self.bootstrap.state_path = home / ".local/state/dev-bootstrap/manifest.json"
+        self.bootstrap.target = TargetUser("tester", os.getuid(), os.getgid(), str(home), "/bin/bash")
+        self.bootstrap.manifest = {"schema": 2, "tools": {}}
+        self.bootstrap.target_path = str(self.bootstrap.bin_dir)
+        self.bootstrap._version_at_path = lambda path, label: "2.0.0"
+
+    def pending(self, payload=b"published"):
+        self.bootstrap.manifest["pending_binary"] = {
+            "name": "codex", "version": "2.0.0", "sha256": hashlib.sha256(payload).hexdigest(),
+        }
+
+    def test_preflight_and_recovery_accept_late_published_binary_before_new_release(self):
+        bootstrap = self.bootstrap
+        bootstrap.bin_dir.mkdir(parents=True)
+        (bootstrap.bin_dir / "codex").write_bytes(b"published")
+        self.pending()
+        bootstrap._save_manifest()
+        original = bootstrap.state_path.read_bytes()
+        bootstrap._load_manifest()
+        bootstrap._check_npm_prefix()
+        self.assertEqual(bootstrap.state_path.read_bytes(), original)
+        bootstrap._recover_pending_binary()
+        self.assertNotIn("pending_binary", json.loads(bootstrap.state_path.read_text()))
+        self.assertEqual(bootstrap.manifest["tools"]["codex"]["version"], "2.0.0")
+        self.assertEqual(bootstrap._install_managed_binary("bun", "2.0.0", b"bun"), "installé")
+        bootstrap._version_at_path = lambda path, label: "3.0.0" if Path(path).read_bytes() == b"new" else "2.0.0"
+        self.assertEqual(bootstrap._install_managed_binary("codex", "3.0.0", b"new"), "mis à jour")
+
+    def test_recovery_before_publish_preserves_old_binary(self):
+        bootstrap = self.bootstrap
+        bootstrap.bin_dir.mkdir(parents=True)
+        path = bootstrap.bin_dir / "codex"
+        path.write_bytes(b"old")
+        old = {"version": "1.0.0", "sha256": hashlib.sha256(b"old").hexdigest()}
+        bootstrap.manifest["tools"]["codex"] = old.copy()
+        self.pending()
+        bootstrap._recover_pending_binary()
+        self.assertEqual(path.read_bytes(), b"old")
+        self.assertEqual(bootstrap.manifest["tools"]["codex"], old)
+        self.assertNotIn("pending_binary", bootstrap.manifest)
+
+    def test_pending_binary_rejects_modified_payload_and_malformed_records(self):
+        bootstrap = self.bootstrap
+        bootstrap.bin_dir.mkdir(parents=True)
+        path = bootstrap.bin_dir / "codex"
+        path.write_bytes(b"tampered")
+        self.pending()
+        with self.assertRaises(InstallError):
+            bootstrap._check_npm_prefix()
+        for record in ([], {"name": "../escape"},
+                       {"name": [], "version": "2.0.0", "sha256": "a" * 64}):
+            bootstrap.manifest["pending_binary"] = record
+            with self.subTest(record=record), self.assertRaises(InstallError):
+                bootstrap._check_pending_binary()
+
+    def test_dangling_binary_symlink_is_preserved(self):
+        bootstrap = self.bootstrap
+        bootstrap.bin_dir.mkdir(parents=True)
+        path = bootstrap.bin_dir / "codex"
+        path.symlink_to("missing")
+        with self.assertRaises(InstallError):
+            bootstrap._install_managed_binary("codex", "2.0.0", b"published")
+        self.assertEqual(os.readlink(path), "missing")
+
+    def test_manifest_rejects_invalid_utf8_schema_and_tool_record(self):
+        bootstrap = self.bootstrap
+        bootstrap.state_path.parent.mkdir(parents=True)
+        for payload in (b"\xff", b'{"schema": true, "tools": {}}',
+                        b'{"schema": 2, "tools": {"codex": []}}'):
+            bootstrap.state_path.write_bytes(payload)
+            with self.subTest(payload=payload), self.assertRaises(InstallError):
+                bootstrap._load_manifest()
+
+    def test_manifest_rejects_symlinked_state_parent(self):
+        bootstrap = self.bootstrap
+        external = bootstrap.home / "external"
+        external.mkdir()
+        external.joinpath("manifest.json").write_text('{"schema": 2, "tools": {}}')
+        bootstrap.state_path.parent.parent.mkdir(parents=True)
+        bootstrap.state_path.parent.symlink_to(external, target_is_directory=True)
+        with self.assertRaises(InstallError):
+            bootstrap._load_manifest()
+
+    def test_uninstall_rejects_symlinked_bin_directory_without_deleting_external_file(self):
+        bootstrap = self.bootstrap
+        external = bootstrap.home / "external"
+        external.mkdir()
+        binary = external / "codex"
+        binary.write_bytes(b"personal")
+        bootstrap.prefix.mkdir(parents=True)
+        bootstrap.bin_dir.symlink_to(external, target_is_directory=True)
+        bootstrap.manifest["tools"]["codex"] = {
+            "version": "2.0.0", "sha256": hashlib.sha256(b"personal").hexdigest(),
+        }
+        bootstrap._save_manifest()
+        bootstrap.dry_run = False
+        with self.assertRaises(InstallError):
+            bootstrap.uninstall()
+        self.assertEqual(binary.read_bytes(), b"personal")
+
+    def test_uninstall_reports_broken_managed_link_without_traceback(self):
+        bootstrap = self.bootstrap
+        bootstrap.bin_dir.mkdir(parents=True)
+        binary = bootstrap.bin_dir / "codex"
+        binary.symlink_to("missing")
+        bootstrap.manifest["tools"]["codex"] = {
+            "version": "2.0.0", "sha256": "a" * 64, "link": "missing",
+        }
+        bootstrap._save_manifest()
+        bootstrap.dry_run = False
+        with self.assertRaisesRegex(InstallError, "cassé"):
+            bootstrap.uninstall()
+        self.assertTrue(binary.is_symlink())
+
+    def test_atomic_write_rejects_parent_traversal_without_creating_file(self):
+        bootstrap = self.bootstrap
+        path = bootstrap.home / ".." / (bootstrap.home.name + "-escape")
+        with self.assertRaises(InstallError):
+            bootstrap._atomic_user_write(path, b"escape")
+        self.assertFalse(path.exists())
+
+    def test_user_directory_rejects_dangling_symlink(self):
+        bootstrap = self.bootstrap
+        path = bootstrap.home / "dangling"
+        path.symlink_to("missing", target_is_directory=True)
+        with self.assertRaises(InstallError):
+            bootstrap._ensure_user_directory(path)
+
+
+class AdversarialMetadataTests(unittest.TestCase):
+    def test_node_index_rejects_malformed_entries(self):
+        valid = {"version": "v24.1.0", "lts": "LTS", "files": ["linux-x64"]}
+        for releases in ({}, [None], [dict(valid, files=None)], [dict(valid, lts=True)]):
+            with self.subTest(releases=releases), self.assertRaises(InstallError):
+                select_latest_node_lts(releases, "linux-x64")
+
+    def test_npm_rejects_malformed_engine_metadata(self):
+        for metadata in ([], {"dist-tags": {"latest": "1.0.0"},
+                              "versions": {"1.0.0": {"engines": []}}}):
+            with self.subTest(metadata=metadata), self.assertRaises(InstallError):
+                select_latest_compatible_package(metadata, "24.1.0")
+
+    def test_asset_rejects_boolean_size_and_nonstring_digest(self):
+        asset = {"name": "tool.tar.gz", "size": 1, "digest": "sha256:" + "a" * 64,
+                 "browser_download_url": "https://github.com/example/tool/releases/download/v1.2.3/tool.tar.gz"}
+        for invalid in (dict(asset, size=True), dict(asset, digest=123)):
+            release = {"tag_name": "v1.2.3", "assets": [invalid]}
+            with self.subTest(asset=invalid), self.assertRaises(InstallError):
+                select_release_asset(release, "example/tool", "tool.tar.gz")
+
+    def test_release_resolver_rejects_malformed_payload_and_tag(self):
+        bootstrap = UbuntuBootstrap.__new__(UbuntuBootstrap)
+        for payload in ([], {"tag_name": None}, {"tag_name": 123}):
+            with self.subTest(payload=payload), patch(
+                    "install_dev_environment.fetch_https_json", return_value=payload), self.assertRaises(InstallError):
+                bootstrap._resolve_release("example/tool", "tool.tar.gz", "v")
+
+
 class SourceTransitionTests(unittest.TestCase):
     def test_allows_only_dynamic_release_fields_to_change(self):
         nodesource_path = Path("/etc/apt/sources.list.d/dev-bootstrap-nodesource.sources")
@@ -1565,6 +1732,62 @@ class SourceTransitionTests(unittest.TestCase):
 
 
 class NetworkValidationTests(unittest.TestCase):
+    def test_network_helpers_reject_malformed_limits_and_urls_before_io(self):
+        with patch("install_dev_environment._open_https") as opened:
+            for url in (None, 42, " https://github.com/example", "https://github.com/\nexample"):
+                with self.subTest(url=url), self.assertRaises(InstallError):
+                    install_dev_environment.fetch_https_bytes(url)
+            for limit in (0, -1, True, "100"):
+                with self.subTest(limit=limit), self.assertRaises(InstallError):
+                    install_dev_environment.fetch_https_bytes("https://github.com/example", max_bytes=limit)
+            for size, digest in ((True, "a" * 64), (1, None), ("1", "a" * 64)):
+                with self.subTest(size=size, digest=digest), self.assertRaises(InstallError):
+                    install_dev_environment.download_verified_file(
+                        "https://github.com/example", Path("unused"), size, digest)
+            opened.assert_not_called()
+
+    def test_metadata_fetch_rejects_unexpected_http_status(self):
+        response = io.BytesIO(b"partial")
+        response.status = 206
+        response.geturl = lambda: "https://github.com/example"
+        with patch("install_dev_environment._open_https", return_value=response), self.assertRaises(InstallError):
+            install_dev_environment.fetch_https_bytes("https://github.com/example")
+
+    def test_redirect_guard_checks_each_hop_before_request(self):
+        request = urllib.request.Request("https://github.com/example")
+        handler = install_dev_environment._TrustedHTTPSRedirectHandler()
+        for url in ("http://github.com/example", "https://evil.example/hop",
+                    "https://github.com:8443/example", "https://user@github.com/example",
+                    "https://github.com:bad/example"):
+            with self.subTest(url=url), self.assertRaises(InstallError):
+                handler.redirect_request(request, None, 302, "Found", {}, url)
+        redirected = handler.redirect_request(
+            request, None, 302, "Found", {}, "https://release-assets.githubusercontent.com/asset")
+        self.assertEqual(redirected.full_url, "https://release-assets.githubusercontent.com/asset")
+
+    def test_open_https_installs_redirect_guard(self):
+        request = urllib.request.Request("https://github.com/example")
+        with patch("install_dev_environment.urllib.request.build_opener") as build:
+            install_dev_environment._open_https(request, timeout=20)
+        self.assertIsInstance(build.call_args.args[0], install_dev_environment._TrustedHTTPSRedirectHandler)
+        build.return_value.open.assert_called_once_with(request, timeout=20)
+
+    def test_network_helpers_reject_credentials_and_nonstandard_ports(self):
+        with tempfile.TemporaryDirectory() as directory:
+            for url in ("https://user@github.com/example", "https://github.com:8443/example",
+                        "https://github.com:bad/example", "http://github.com/example"):
+                actions = (
+                    lambda: install_dev_environment.fetch_https_bytes(url),
+                    lambda: install_dev_environment.probe_https_url(url),
+                    lambda: install_dev_environment.download_verified_file(
+                        url, Path(directory) / "asset", 1, "0" * 64),
+                )
+                for action in actions:
+                    with self.subTest(url=url), patch("install_dev_environment._open_https") as opened:
+                        with self.assertRaises(InstallError):
+                            action()
+                        opened.assert_not_called()
+
     def test_streamed_asset_rejects_non_success_status(self):
         class Response(io.BytesIO):
             status = 404
@@ -1572,7 +1795,7 @@ class NetworkValidationTests(unittest.TestCase):
                 return "https://github.com/oven-sh/bun/releases/download/bun-v1.0.0/bun.zip"
         with tempfile.TemporaryDirectory() as directory:
             destination = Path(directory) / "asset"
-            with patch("install_dev_environment.urllib.request.urlopen", return_value=Response(b"a")):
+            with patch("install_dev_environment._open_https", return_value=Response(b"a")):
                 with self.assertRaises(InstallError):
                     install_dev_environment.download_verified_file(
                         Response().geturl(), destination, 1, hashlib.sha256(b"a").hexdigest(),
@@ -1589,7 +1812,7 @@ class NetworkValidationTests(unittest.TestCase):
                 return "https://github.com/oven-sh/bun/releases/download/bun-v1.0.0/bun.zip"
         with tempfile.TemporaryDirectory() as directory:
             destination = Path(directory) / "asset"
-            with patch("install_dev_environment.urllib.request.urlopen", return_value=Response(payload)):
+            with patch("install_dev_environment._open_https", return_value=Response(payload)):
                 install_dev_environment.download_verified_file(
                     Response().geturl(), destination, len(payload), hashlib.sha256(payload).hexdigest(),
                 )
@@ -1603,7 +1826,7 @@ class NetworkValidationTests(unittest.TestCase):
         response.__exit__ = lambda this, *args: None
         with tempfile.TemporaryDirectory() as directory:
             destination = Path(directory) / "asset"
-            with patch("install_dev_environment.urllib.request.urlopen", return_value=response):
+            with patch("install_dev_environment._open_https", return_value=response):
                 with self.assertRaises(InstallError):
                     install_dev_environment.download_verified_file(response.geturl(), destination, len(payload), "0" * 64)
             self.assertFalse(destination.exists())
@@ -1617,7 +1840,7 @@ class NetworkValidationTests(unittest.TestCase):
             "https://deb.nodesource.com/InRelease", 405, "Method not allowed", Message(), None
         )
         with patch(
-            "install_dev_environment.urllib.request.urlopen",
+            "install_dev_environment._open_https",
             side_effect=[head_error, response],
         ):
             with self.assertRaises(InstallError):
