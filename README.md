@@ -54,6 +54,6 @@ Lancez l’installateur **sans `sudo`** :
 python3 ~/ubuntu-dev-environment/03-environnement-de-developpement/install_dev_environment.py
 ```
 
-Suivez les demandes pour l’identité Git et l’accès GitHub. Ouvrez ensuite un nouveau terminal pour charger les outils installés. [Outils et options de l’étape 3](03-environnement-de-developpement/README.md).
+Suivez les demandes pour l’identité Git et l’accès GitHub. La configuration Bash est intégrée automatiquement. Exécutez ensuite `exec bash` pour prendre en compte les modifications. Pour les mises à jour ultérieures, lancez `dev-shell-update`, puis `exec bash`. [Outils et options de l’étape 3](03-environnement-de-developpement/README.md).
 
 En cas d’échec SSH, gardez toute session encore ouverte et utilisez la console de secours. Voir [sécurité et récupération](SECURITY.md).

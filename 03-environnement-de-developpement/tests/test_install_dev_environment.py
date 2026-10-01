@@ -202,6 +202,31 @@ class TargetUserTests(unittest.TestCase):
 
 
 class ShellConfigurationTests(unittest.TestCase):
+    def test_shell_assets_reject_missing_directory_symlink_and_invalid_syntax(self):
+        for kind in ("missing", "directory", "symlink", "syntax"):
+            with self.subTest(kind=kind), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                shell = root / "shell"
+                shell.mkdir()
+                (shell / "update.bash").write_text("true\n")
+                config = shell / "config.bash"
+                if kind == "directory":
+                    config.mkdir()
+                elif kind == "symlink":
+                    config.symlink_to(shell / "update.bash")
+                elif kind == "syntax":
+                    config.write_text("if then\n")
+                bootstrap = UbuntuBootstrap.__new__(UbuntuBootstrap)
+                with patch("install_dev_environment.__file__", str(root / "install_dev_environment.py")):
+                    with self.assertRaises(InstallError):
+                        bootstrap._validate_shell_assets()
+
+    def test_shell_assets_report_missing_bash_as_install_error(self):
+        bootstrap = UbuntuBootstrap.__new__(UbuntuBootstrap)
+        with patch("install_dev_environment.subprocess.run", side_effect=FileNotFoundError):
+            with self.assertRaises(InstallError):
+                bootstrap._validate_shell_assets()
+
     def test_final_shell_verification_rejects_lookalikes_outside_managed_block(self):
         with tempfile.TemporaryDirectory() as directory:
             home = Path(directory)
@@ -259,6 +284,7 @@ class BootstrapSafetyTests(unittest.TestCase):
         bootstrap.target_path = "/usr/bin"
         bootstrap._check_tty = lambda: setattr(bootstrap, "auth_tty_available", True)
         bootstrap.validate_environment = MagicMock()
+        bootstrap._prepare_shell_configuration = MagicMock()
         bootstrap.resolve_official_plan = MagicMock()
         bootstrap._check_node_manager_conflicts = MagicMock()
         bootstrap._check_docker_conflicts = MagicMock()
@@ -284,6 +310,7 @@ class BootstrapSafetyTests(unittest.TestCase):
         bootstrap.target_path = "/usr/bin"
         bootstrap._check_tty = lambda: setattr(bootstrap, "auth_tty_available", True)
         bootstrap.validate_environment = MagicMock()
+        bootstrap._prepare_shell_configuration = MagicMock()
         bootstrap.resolve_official_plan = MagicMock()
         bootstrap._check_node_manager_conflicts = MagicMock()
         bootstrap._check_docker_conflicts = MagicMock()
@@ -308,6 +335,7 @@ class BootstrapSafetyTests(unittest.TestCase):
         bootstrap.dry_run = False
         bootstrap._check_tty = lambda: setattr(bootstrap, "auth_tty_available", False)
         bootstrap.validate_environment = MagicMock()
+        bootstrap._prepare_shell_configuration = MagicMock()
 
         with self.assertRaisesRegex(InstallError, "terminal interactif"):
             bootstrap.preflight()
@@ -474,6 +502,20 @@ class BootstrapSafetyTests(unittest.TestCase):
                     Response().geturl(), Path(directory) / "asset", len(payload), hashlib.sha256(payload).hexdigest(),
                 )
             self.assertEqual(events, ["file", "replace", "directory"])
+
+    def test_node_manager_check_reports_invalid_utf8_without_modification(self):
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory)
+            rc = home / ".profile"
+            rc.write_bytes(b"\xff")
+            bootstrap = UbuntuBootstrap.__new__(UbuntuBootstrap)
+            bootstrap.home = home
+            bootstrap.target_path = "/usr/bin"
+            bootstrap._target_shell_rcs = lambda: [rc]
+            with patch("install_dev_environment.shutil.which", return_value=None):
+                with self.assertRaisesRegex(InstallError, "Impossible d'inspecter"):
+                    bootstrap._check_node_manager_conflicts()
+            self.assertEqual(rc.read_bytes(), b"\xff")
 
     def test_dry_run_rejects_node_binary_shadowing(self):
         bootstrap = UbuntuBootstrap.__new__(UbuntuBootstrap)
@@ -1460,6 +1502,7 @@ class SystemCommandTests(unittest.TestCase):
     def test_preflight_rejects_untracked_npm_before_mutation(self):
         bootstrap = UbuntuBootstrap.__new__(UbuntuBootstrap)
         bootstrap.validate_environment = MagicMock()
+        bootstrap._prepare_shell_configuration = MagicMock()
         bootstrap.resolve_official_plan = MagicMock()
         bootstrap._check_node_manager_conflicts = MagicMock()
         bootstrap._check_docker_conflicts = MagicMock()

@@ -45,17 +45,19 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          find . -type f \( -name '*.sh' -o -name '*.bash' \) -print0 > "$RUNNER_TEMP/shell-scripts.nul"
           while IFS= read -r -d '' script; do
             bash -n "$script"
-          done < <(find . -type f -name '*.sh' -print0)
+          done < "$RUNNER_TEMP/shell-scripts.nul"
 
       - name: ShellCheck every shell script
         shell: bash
         run: |
           set -euo pipefail
+          find . -type f \( -name '*.sh' -o -name '*.bash' \) -print0 > "$RUNNER_TEMP/shell-scripts.nul"
           while IFS= read -r -d '' script; do
             shellcheck -s bash "$script"
-          done < <(find . -type f -name '*.sh' -print0)
+          done < "$RUNNER_TEMP/shell-scripts.nul"
 
       - name: Existing Python syntax and unit tests
         run: |
@@ -91,7 +93,7 @@ jobs:
                   target = unquote(dest.split('#', 1)[0])
                   if target and not re.match(r'^[a-z]+://', target):
                       assert (doc.parent / target).exists(), f'{doc}: broken link {dest}'
-              for script in re.findall(r'(?<![\w.-])((?:\.?\.?/)?[A-Za-z0-9_./-]+\.sh)\b', text):
+              for script in re.findall(r'(?<![\w.-])((?:\.?\.?/)?[A-Za-z0-9_./-]+\.(?:sh|bash))\b', text):
                   if script.startswith('/') or '/' not in script:
                       continue
                   if script.startswith('./'):

@@ -942,7 +942,7 @@ class UbuntuBootstrap:
                 lines = path.read_text(encoding="utf-8").splitlines()
             except FileNotFoundError:
                 continue
-            except OSError as exc:
+            except (OSError, UnicodeDecodeError) as exc:
                 raise InstallError(f"Impossible d'inspecter {path} sans modifier la configuration.") from exc
             if any(manager.search(line) for line in lines if not line.lstrip().startswith("#")):
                 raise InstallError(
@@ -1217,6 +1217,7 @@ class UbuntuBootstrap:
             if not shutil.which("git", path=self.target_path):
                 raise InstallError("Git est introuvable pour le compte utilisateur cible.")
         self.validate_environment()
+        self._prepare_shell_configuration()
         self.resolve_official_plan()
         self._check_node_manager_conflicts()
         self._check_docker_conflicts()
@@ -1244,6 +1245,7 @@ class UbuntuBootstrap:
         print("  Prérequis Codex: bubblewrap et test du bac à sable; profil AppArmor si nécessaire")
         print(f"  Ubuntu: {self.version_id} ({self.codename}), architecture {self.arch}")
         print("  Git/GitHub CLI: configuration interactive après installation (aucune question en mode à blanc)")
+        print("  Bash: configuration modulaire dans un bloc unique de ~/.bashrc; commande dev-shell-update")
 
     @staticmethod
     def _check_root_directory(path: Path) -> None:
@@ -2091,33 +2093,72 @@ class UbuntuBootstrap:
             body.append(f'eval "$(zoxide init {shell_name})"')
         if shell_name == "bash":
             body.append('eval "$(fzf --bash)"')
+            config = shlex.quote(str(Path(__file__).resolve().parent / "shell" / "config.bash"))
+            body.append(f"if [ -f {config} ]; then\n    source {config}\nfi")
         elif shell_name == "zsh":
             body.append("source <(fzf --zsh)")
         else:
             body.append("fzf --fish | source")
         return "\n".join(body)
 
-    def _configure_shell(self) -> None:
-        self.set_step("configuration idempotente du shell utilisateur pour zoxide et fzf")
-        path = config_file_for_shell(self.home, self.target.shell)
-        with self.target_file_privileges():
-            if path.is_symlink():
-                raise InstallError(f"Le fichier shell {path} est un lien symbolique; il ne sera pas modifié.")
-            if path.exists() and (not path.is_file() or path.stat().st_uid != self.target.uid):
-                raise InstallError(f"Le fichier shell {path} n'appartient pas au compte cible.")
-            try:
-                existing = path.read_text(encoding="utf-8") if path.exists() else ""
-            except (OSError, UnicodeDecodeError) as exc:
-                raise InstallError(f"Impossible de lire le fichier shell {path}.") from exc
+    def _shell_configuration_files(self) -> list[tuple[Path, str]]:
         shell_name = Path(self.target.shell).name
-        body = self._shell_config_body(shell_name, existing)
-        updated = update_managed_block(existing, self.MANAGED_START, self.MANAGED_END, body)
-        if updated != existing:
+        files = [(config_file_for_shell(self.home, self.target.shell), shell_name)]
+        if shell_name != "bash":
+            files.append((self.home / ".bashrc", "bash"))
+        return files
+
+    def _validate_shell_assets(self) -> None:
+        for name in ("config.bash", "update.bash"):
+            asset = Path(__file__).resolve().parent / "shell" / name
+            if asset.is_symlink() or not asset.is_file():
+                raise InstallError(f"Configuration Bash absente ou non régulière : {asset}.")
+            try:
+                checked = subprocess.run(["bash", "-n", str(asset)], capture_output=True, text=True)
+            except OSError as exc:
+                raise InstallError(f"Impossible de vérifier la configuration Bash : {asset}.") from exc
+            if checked.returncode:
+                raise InstallError(f"Configuration Bash absente ou invalide : {asset}.")
+
+    def _prepare_shell_configuration(self) -> list[tuple[Path, str]]:
+        # Lire et préparer tous les fichiers avant la première écriture.
+        pending: list[tuple[Path, str]] = []
+        with self.target_file_privileges():
+            self._validate_shell_assets()
+            for path, shell_name in self._shell_configuration_files():
+                for parent in (path.parent, *path.parent.parents):
+                    if parent == self.home.parent:
+                        break
+                    if parent.is_symlink() or (parent.exists() and (
+                            not parent.is_dir() or parent.stat().st_uid != self.target.uid)):
+                        raise InstallError(f"Répertoire shell non sûr : {parent}.")
+                if path.is_symlink():
+                    raise InstallError(f"Le fichier shell {path} est un lien symbolique; il ne sera pas modifié.")
+                if path.exists() and (not path.is_file() or path.stat().st_uid != self.target.uid):
+                    raise InstallError(f"Le fichier shell {path} n'appartient pas au compte cible.")
+                try:
+                    existing = path.read_text(encoding="utf-8") if path.exists() else ""
+                except (OSError, UnicodeDecodeError) as exc:
+                    raise InstallError(f"Impossible de lire le fichier shell {path}.") from exc
+                outside = self._outside_managed_config(existing)
+                if shell_name == "bash" and "# Alias et fonctions Bash Pareto, Ubuntu" in outside:
+                    raise InstallError(
+                        "Ancien script Bash détecté hors du bloc géré : retirez ce bloc manuel "
+                        "après sauvegarde avant de relancer l'étape 3. Fichier laissé intact."
+                    )
+                body = self._shell_config_body(shell_name, existing)
+                updated = update_managed_block(existing, self.MANAGED_START, self.MANAGED_END, body)
+                if updated != existing:
+                    pending.append((path, updated))
+        return pending
+
+    def _configure_shell(self) -> None:
+        self.set_step("configuration idempotente du shell et de la configuration Bash modulaire")
+        pending = self._prepare_shell_configuration()
+        for path, updated in pending:
             self._ensure_user_directory(path.parent)
             self._atomic_user_write(path, updated.encode("utf-8"), 0o644)
-            self.status["shell"] = "configuré"
-        else:
-            self.status["shell"] = "déjà conforme"
+        self.status["shell"] = "configuré" if pending else "déjà conforme"
         self._verify_shell_configuration()
 
     def _write_tty(self, message: str) -> None:
@@ -2312,18 +2353,26 @@ class UbuntuBootstrap:
         return actual
 
     def _verify_shell_configuration(self) -> None:
-        path = config_file_for_shell(self.home, self.target.shell)
-        if not path.is_file() or path.is_symlink() or path.stat().st_uid != self.target.uid:
-            raise InstallError("Le fichier de configuration du shell est absent ou non sûr.")
-        text = path.read_text(encoding="utf-8")
-        shell_name = Path(self.target.shell).name
-        canonical = update_managed_block(
-            text, self.MANAGED_START, self.MANAGED_END,
-            self._shell_config_body(shell_name, text),
-        )
-        if (text.count(self.MANAGED_START) != 1 or text.count(self.MANAGED_END) != 1
-                or canonical != text):
-            raise InstallError("Le bloc shell canonique zoxide/fzf est absent ou modifié.")
+        with self.target_file_privileges():
+            self._validate_shell_assets()
+            self._verify_shell_configuration_files()
+
+    def _verify_shell_configuration_files(self) -> None:
+        for path, shell_name in self._shell_configuration_files():
+            if not path.is_file() or path.is_symlink() or path.stat().st_uid != self.target.uid:
+                raise InstallError("Le fichier de configuration du shell est absent ou non sûr.")
+            try:
+                text = path.read_text(encoding="utf-8")
+            except (OSError, UnicodeDecodeError) as exc:
+                raise InstallError(f"Impossible de lire le fichier shell {path}.") from exc
+            canonical = update_managed_block(
+                text, self.MANAGED_START, self.MANAGED_END,
+                self._shell_config_body(shell_name, text),
+            )
+            if (text.splitlines().count(self.MANAGED_START) != 1
+                    or text.splitlines().count(self.MANAGED_END) != 1
+                    or canonical != text):
+                raise InstallError(f"Le bloc shell canonique est absent ou modifié : {path}.")
 
     def verify_final_state(self) -> None:
         self.set_step("validation finale des versions, du service et de l'authentification")
@@ -2385,7 +2434,8 @@ class UbuntuBootstrap:
         print(f"  Pré requis Codex: bubblewrap {self.status.get('bubblewrap', 'vérifié')}; "
               f"bac à sable {self.status.get('bwrap_sandbox', 'vérifié')}")
         print(f"  Shell {Path(self.target.shell).name}: {self.status.get('shell', 'configuré')}")
-        print("  Ouvrez un nouveau shell pour charger zoxide, fzf et le PATH utilisateur.")
+        print("  Exécutez exec bash pour prendre en compte les modifications Bash.")
+        print("  Mises à jour ultérieures : dev-shell-update, puis exec bash.")
         print("  Docker reste utilisable avec sudo; aucun droit docker-group n'a été accordé.")
 
     def run(self) -> int:
