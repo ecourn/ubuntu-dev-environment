@@ -5,7 +5,7 @@ Prérequis : une connexion PuTTY **réussie** depuis votre PC avec `ubuntu` et s
 Dans cette session `ubuntu` :
 
 ```bash
-cd ~/ubuntu-dev-environment
+cd ~/.ubuntu-dev-environment
 sudo env SSH_CONNECTION="${SSH_CONNECTION:-}" \
   bash ./02-configuration-serveur/configuration-serveur.sh --user ubuntu
 ```

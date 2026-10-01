@@ -3,7 +3,7 @@
 Depuis la session administrateur initiale, après avoir cloné le dépôt comme indiqué dans le [parcours principal](../README.md) :
 
 ```bash
-cd ~/ubuntu-dev-environment
+cd ~/.ubuntu-dev-environment
 sudo bash ./01-preparation-utilisateur/setup-ubuntu-user.sh
 ```
 

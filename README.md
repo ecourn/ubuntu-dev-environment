@@ -8,6 +8,8 @@ Avec PuTTYgen, créez une clé Ed25519. Enregistrez la clé privée `.ppk` **sur
 
 > Quand `sudo` demande un mot de passe, rien ne s’affiche pendant la saisie : tapez-le puis appuyez sur Entrée.
 
+Le dépôt est cloné dans `~/.ubuntu-dev-environment`, un dossier caché pour garder le répertoire personnel dégagé. Si vous avez déjà installé le dépôt dans `~/ubuntu-dev-environment`, suivez les [instructions de migration](03-environnement-de-developpement/README.md#migrer-un-dépôt-existant).
+
 ## 1. Créer le compte `ubuntu` (session administrateur initiale)
 
 Copiez ce bloc dans la session SSH initiale. Si `sudo -v` échoue, les autres commandes ne seront pas lancées.
@@ -16,11 +18,11 @@ Copiez ce bloc dans la session SSH initiale. Si `sudo -v` échoue, les autres co
 if sudo -v; then
   sudo apt-get update &&
   sudo apt-get install -y git ca-certificates &&
-  git clone https://github.com/ecourn/ubuntu-dev-environment.git ~/ubuntu-dev-environment &&
-  cd ~/ubuntu-dev-environment &&
+  git clone https://github.com/ecourn/ubuntu-dev-environment.git ~/.ubuntu-dev-environment &&
+  cd ~/.ubuntu-dev-environment &&
   sudo bash ./01-preparation-utilisateur/setup-ubuntu-user.sh &&
   cd ~ &&
-  rm -rf -- ~/ubuntu-dev-environment
+  rm -rf -- ~/.ubuntu-dev-environment
 fi
 ```
 
@@ -31,8 +33,8 @@ Quand le script le demande, collez **la clé publique OpenSSH**, jamais la `.ppk
 Dans la session `ubuntu` que vous venez de tester :
 
 ```bash
-git clone https://github.com/ecourn/ubuntu-dev-environment.git ~/ubuntu-dev-environment
-cd ~/ubuntu-dev-environment
+git clone https://github.com/ecourn/ubuntu-dev-environment.git ~/.ubuntu-dev-environment
+cd ~/.ubuntu-dev-environment
 sudo env SSH_CONNECTION="${SSH_CONNECTION:-}" \
   bash ./02-configuration-serveur/configuration-serveur.sh --user ubuntu
 ```
@@ -51,7 +53,7 @@ Il configure aussi la locale `fr_FR.UTF-8`, le fuseau `Europe/Paris` et la synch
 Lancez l’installateur **sans `sudo`** :
 
 ```bash
-python3 ~/ubuntu-dev-environment/03-environnement-de-developpement/install_dev_environment.py
+python3 ~/.ubuntu-dev-environment/03-environnement-de-developpement/install_dev_environment.py
 ```
 
 Suivez les demandes pour l’identité Git et l’accès GitHub. La configuration Bash est intégrée automatiquement. Exécutez ensuite `exec bash` pour prendre en compte les modifications. Pour les mises à jour ultérieures, lancez `dev-shell-update`, puis `exec bash`. [Outils et options de l’étape 3](03-environnement-de-developpement/README.md).

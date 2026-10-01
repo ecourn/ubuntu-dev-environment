@@ -376,8 +376,8 @@ summary() {
     printf 'Clé SSH : %s\n' "$HOME_DIR/.ssh/authorized_keys"
     printf 'Sudo : accès administrateur non interactif activé\n'
     printf '\nReconnectez-vous en tant que ubuntu, puis lancez :\n'
-    printf '  git clone %s ~/ubuntu-dev-environment\n' "$REPOSITORY_URL"
-    printf '  cd ~/ubuntu-dev-environment\n'
+    printf '  git clone %s ~/.ubuntu-dev-environment\n' "$REPOSITORY_URL"
+    printf '  cd ~/.ubuntu-dev-environment\n'
     printf 'Consultez ensuite 01-configuration-serveur/README.md.\n'
 }
 

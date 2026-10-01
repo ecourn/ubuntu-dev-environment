@@ -3,7 +3,7 @@
 Après avoir testé une nouvelle connexion `ubuntu` sur le **port SSH final** de l’étape 2, lancez dans cette session :
 
 ```bash
-python3 ~/ubuntu-dev-environment/03-environnement-de-developpement/install_dev_environment.py
+python3 ~/.ubuntu-dev-environment/03-environnement-de-developpement/install_dev_environment.py
 ```
 
 Lancez le script **sans `sudo`** depuis un terminal interactif. Il demande votre nom et votre adresse e-mail Git, puis l’authentification GitHub CLI si nécessaire. Préparez un Personal Access Token classique GitHub avec les scopes `repo`, `read:org` et `gist` ([documentation GitHub CLI](https://cli.github.com/manual/gh_auth_login)). La saisie du token est masquée. Une connexion `gh` déjà valide peut être conservée ; l’installateur configure Git pour l’utiliser avec GitHub en HTTPS.
@@ -26,6 +26,8 @@ Le chargement du fichier est placé dans un seul bloc délimité par `# >>> dev-
 
 Les fichiers Bash et les configurations utilisateur sont vérifiés avant le début de l’installation. La fonction `agents` crée un `AGENTS.md` uniquement s’il n’existe pas déjà. La valeur personnelle de `NODE_OPTIONS` est conservée ; en son absence, la mémoire maximale de Node.js est réglée à 4096 Mio.
 
+Le dossier `~/.ubuntu-dev-environment` est caché dans les affichages ordinaires du répertoire personnel. Cela réduit le risque de suppression accidentelle, mais ne protège pas contre une suppression : les alias, fonctions et réglages du dépôt ne seraient plus chargés à la prochaine ouverture de Bash.
+
 Conservez le dépôt à son emplacement d’installation : `.bashrc` charge la configuration depuis ce chemin, et ignore ce chargement si le fichier est absent. Si vous déplacez le dépôt, relancez l’étape 3 pour actualiser le chemin. Pour Zsh et Fish, seul leur bloc géré est actualisé et `.bashrc` est également préparé ; `exec bash` ouvre la session Bash configurée.
 
 Après avoir chargé Bash, les mises à jour se font avec :
@@ -38,3 +40,17 @@ exec bash
 La commande récupère la branche distante suivie par le clone (GitHub pour le clone décrit ici), vérifie la syntaxe des fichiers Bash distants, puis avance le dépôt uniquement si aucune fusion n’est nécessaire. Elle actualise le dépôt entier sans relancer l’installation des outils et sans écrire dans `.bashrc`. Les changements de l’installateur nécessitant une nouvelle installation demandent de relancer l’étape 3.
 
 Elle s’arrête si le dépôt comporte des fichiers modifiés ou non suivis, des commits locaux, une divergence ou des fichiers Bash distants absents, non réguliers ou invalides. Elle refuse aussi une mise à jour qui écraserait un fichier local ignoré par Git. Vos modifications locales sont conservées. Personnalisez de préférence votre shell hors du bloc géré dans `.bashrc` ; réservez les fichiers du dépôt aux réglages partagés. Pour publier ces réglages, commitez puis poussez vos changements sur GitHub.
+
+## Migrer un dépôt existant
+
+Si votre installation utilise encore `~/ubuntu-dev-environment`, déplacez le dépôt sous le même compte utilisateur, puis relancez l’étape 3 pour actualiser le chemin dans `.bashrc` :
+
+```bash
+cd ~ &&
+mv -T -n -- ~/ubuntu-dev-environment ~/.ubuntu-dev-environment &&
+[ ! -e ~/ubuntu-dev-environment ] &&
+python3 ~/.ubuntu-dev-environment/03-environnement-de-developpement/install_dev_environment.py &&
+exec bash
+```
+
+Si `~/.ubuntu-dev-environment` existe déjà, le déplacement ne l’écrase pas et la suite du bloc ne s’exécute pas. Vérifiez les deux dossiers avant de choisir celui à conserver. La relance de l’installateur remplace le bloc géré de `.bashrc` tout en conservant vos réglages personnels autour.
