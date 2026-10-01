@@ -9,7 +9,6 @@ case ":$PATH:" in
     *":$HOME/.local/bin:"*) ;;
     *) export PATH="$HOME/.local/bin:$PATH" ;;
 esac
-export NODE_OPTIONS="${NODE_OPTIONS---max-old-space-size=4096}"
 export NPM_CONFIG_PREFIX="$HOME/.local/share/dev-bootstrap"
 
 # ----- Shell / configuration -------------------------------------
