@@ -1298,6 +1298,7 @@ class UbuntuBootstrap:
         for tool in ("node", "npm", "pnpm", "bun", "uv", "zoxide", "fzf", "codex", "gh"):
             value = self.plan[tool] if isinstance(self.plan.get(tool), str) else self.plan[tool]["version"]
             print(f"  {tool}: {value}")
+        print(f"  bunx: {self.plan['bun']['version']} (fourni par le binaire Bun)")
         print("  APT: candidat installable non vérifié en mode à blanc; Node/GitHub ci-dessus sont les dernières releases amont.")
         print("  Docker: dernière version stable publiée dans le dépôt APT officiel Docker")
         print("  Docker Compose: dernière version stable publiée dans le dépôt APT officiel Docker")
@@ -1797,7 +1798,7 @@ class UbuntuBootstrap:
             return False
         if (not isinstance(pending, dict) or set(pending) != {"name", "version", "sha256"}
                 or not isinstance(pending.get("name"), str)
-                or pending.get("name") not in {"bun", "uv", "uvx", "zoxide", "fzf", "codex"}
+                or pending.get("name") not in {"bun", "bunx", "uv", "uvx", "zoxide", "fzf", "codex"}
                 or not isinstance(pending.get("version"), str)
                 or _parse_stable_version(pending["version"]) is None
                 or not isinstance(pending.get("sha256"), str)
@@ -1909,7 +1910,11 @@ class UbuntuBootstrap:
         bun_version = self.plan["bun"]["version"]
         bun = extract_archive_member(self.artifacts["bun"], "zip", "bun")
         self.status["bun"] = self._install_managed_binary("bun", bun_version, bun)
+        # Bun selects the bun x entry point when invoked under the name bunx.
+        # A regular managed file retains hash checks and crash recovery.
+        self.status["bunx"] = self._install_managed_binary("bunx", bun_version, bun)
         self.verified_versions["Bun"] = bun_version
+        self.verified_versions["Bunx"] = bun_version
 
         uv_version = self.plan["uv"]["version"]
         uv_archive = self.artifacts["uv"]
@@ -2498,6 +2503,7 @@ class UbuntuBootstrap:
         npm = self._verify_command_version("npm", self.plan["npm"], ["npm", "--version"])
         pnpm = self._verify_command_version("pnpm", self.plan["pnpm"], ["pnpm", "--version"])
         bun = self._verify_command_version("Bun", self.plan["bun"]["version"], ["bun", "--version"])
+        bunx = self._verify_command_version("Bunx", self.plan["bun"]["version"], ["bunx", "--version"])
         uv = self._verify_command_version("uv", self.plan["uv"]["version"], ["uv", "--version"])
         zoxide = self._verify_command_version("zoxide", self.plan["zoxide"]["version"], ["zoxide", "--version"])
         fzf = self._verify_command_version("fzf", self.plan["fzf"]["version"], ["fzf", "--version"])
@@ -2529,7 +2535,7 @@ class UbuntuBootstrap:
             raise InstallError("Le service Docker n'est pas actif lors du contrôle final.")
         self._verify_shell_configuration()
         self.verified_versions.update({
-            "Node.js": node, "npm": npm, "pnpm": pnpm, "Bun": bun, "uv": uv,
+            "Node.js": node, "npm": npm, "pnpm": pnpm, "Bun": bun, "Bunx": bunx, "uv": uv,
             "Docker Engine": docker, "Docker Compose": compose, "GitHub CLI": gh,
             "zoxide": zoxide, "fzf": fzf, "Codex CLI": codex,
         })
@@ -2537,7 +2543,7 @@ class UbuntuBootstrap:
     def print_report(self) -> None:
         rows = [
             ("Node.js", "nodejs"), ("npm", "npm"), ("pnpm", "pnpm"),
-            ("Bun", "bun"), ("uv", "uv"), ("Docker Engine", "docker-ce"),
+            ("Bun", "bun"), ("Bunx", "bunx"), ("uv", "uv"), ("Docker Engine", "docker-ce"),
             ("Docker Compose", "docker-compose-plugin"), ("GitHub CLI", "gh"),
             ("zoxide", "zoxide"), ("fzf", "fzf"), ("Codex CLI", "codex"),
         ]

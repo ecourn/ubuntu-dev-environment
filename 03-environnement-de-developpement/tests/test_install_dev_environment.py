@@ -1556,6 +1556,52 @@ class AdversarialStateTests(unittest.TestCase):
             "name": "codex", "version": "2.0.0", "sha256": hashlib.sha256(payload).hexdigest(),
         }
 
+    def test_release_installs_bunx_from_bun_asset_and_upgrades_both(self):
+        bootstrap = self.bootstrap
+        bootstrap.set_step = lambda label: None
+        bootstrap.status, bootstrap.verified_versions = {}, {}
+        bootstrap.plan = {
+            tool: {"version": "2.0.0", "binary": "codex"}
+            for tool in ("bun", "uv", "zoxide", "fzf", "codex")
+        }
+        bootstrap.artifacts = {tool: tool for tool in bootstrap.plan}
+        with patch("install_dev_environment.extract_archive_member", side_effect=lambda asset, *args, **kwargs: asset.encode()):
+            bootstrap._install_release_tools()
+            bunx = bootstrap.bin_dir / "bunx"
+            self.assertEqual(bunx.read_bytes(), (bootstrap.bin_dir / "bun").read_bytes())
+            self.assertEqual(stat.S_IMODE(bunx.stat().st_mode), 0o755)
+            bootstrap._install_release_tools()
+            self.assertEqual(bootstrap.status["bunx"], "déjà conforme")
+            bootstrap.plan["bun"]["version"] = "3.0.0"
+            bootstrap.artifacts["bun"] = "new-bun"
+            bootstrap._version_at_path = lambda path, label: "3.0.0" if Path(path).read_bytes() == b"new-bun" else "2.0.0"
+            bootstrap._install_release_tools()
+        self.assertEqual(bunx.read_bytes(), b"new-bun")
+        self.assertEqual(bootstrap.manifest["tools"]["bunx"], bootstrap.manifest["tools"]["bun"])
+        self.assertEqual(bootstrap.verified_versions["Bunx"], "3.0.0")
+
+    def test_bunx_personal_file_is_preserved(self):
+        bootstrap = self.bootstrap
+        bootstrap.bin_dir.mkdir(parents=True)
+        path = bootstrap.bin_dir / "bunx"
+        path.write_bytes(b"personal")
+        with self.assertRaisesRegex(InstallError, "sans état géré"):
+            bootstrap._install_managed_binary("bunx", "2.0.0", b"official")
+        self.assertEqual(path.read_bytes(), b"personal")
+
+    def test_bunx_interrupted_publication_is_recovered(self):
+        bootstrap = self.bootstrap
+        bootstrap.bin_dir.mkdir(parents=True)
+        path = bootstrap.bin_dir / "bunx"
+        path.write_bytes(b"published")
+        self.pending()
+        bootstrap.manifest["pending_binary"]["name"] = "bunx"
+        bootstrap._save_manifest()
+        bootstrap._load_manifest()
+        bootstrap._recover_pending_binary()
+        self.assertNotIn("pending_binary", bootstrap.manifest)
+        self.assertEqual(bootstrap.manifest["tools"]["bunx"]["version"], "2.0.0")
+
     def test_preflight_and_recovery_accept_late_published_binary_before_new_release(self):
         bootstrap = self.bootstrap
         bootstrap.bin_dir.mkdir(parents=True)
