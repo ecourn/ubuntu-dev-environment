@@ -202,6 +202,15 @@ alias perms='stat -c "%A %a %U:%G %n"'
 
 # ----- Recherche de fichiers / texte -----------------------------
 
+# Afficher les 20 fichiers de code contenant le plus de lignes.
+alias toplinecode="find . -type f \( -name '*.ts' -o -name '*.tsx' -o -name '*.js' -o -name '*.jsx' -o -name '*.py' -o -name '*.go' -o -name '*.rs' -o -name '*.sh' \) \
+  -not -path '*/node_modules/*' \
+  -not -path '*/.git/*' \
+  -not -path '*/.venv/*' \
+  -not -path '*/dist/*' \
+  -not -path '*/build/*' \
+  -exec wc -l {} \; | sort -nr | head -n 20"
+
 # Rechercher des fichiers par nom partiel.
 # Utilisation : ff <nom> [dossier]
 function ff {
