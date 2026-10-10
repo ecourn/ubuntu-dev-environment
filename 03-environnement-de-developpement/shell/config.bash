@@ -446,6 +446,10 @@ alias glog='git log --oneline --graph --decorate -20'
 # Afficher uniquement les chemins des fichiers modifiés ou créés dans le dernier commit.
 alias gl='git show --pretty="" --name-only HEAD'
 
+# ----- Git : synchronisation -------------------------------------
+
+# Récupérer les changements distants sans créer de commit de fusion.
+alias gp='git pull --ff-only'
 
 # ----- Git : branches --------------------------------------------
 
