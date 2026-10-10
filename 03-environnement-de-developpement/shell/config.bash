@@ -428,6 +428,9 @@ alias gst='git status -sb'
 # Afficher uniquement les fichiers modifiés ou non suivis.
 alias gss="git status --short --untracked-files=all | sed 's/^...//'"
 
+# Afficher uniquement les fichiers TypeScript (.ts et .tsx) modifiés ou non suivis.
+alias gsts="gss | grep -E '\.tsx?'"
+
 # Afficher la branche actuelle.
 alias gb='git branch --show-current'
 
