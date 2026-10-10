@@ -302,7 +302,7 @@ prepare_ssh_key() {
 }
 
 install_base_packages() {
-    local -a packages=(ca-certificates curl git iproute2 openssh-client openssh-server python3 sudo unzip vim ripgrep openssl util-linux)
+    local -a packages=(ca-certificates curl git iproute2 openssh-client openssh-server python3 sudo unzip vim-gtk3 ripgrep openssl util-linux)
     export DEBIAN_FRONTEND=noninteractive
     log "Actualisation des index APT et installation des outils de base"
     apt-get update
