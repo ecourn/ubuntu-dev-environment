@@ -393,6 +393,14 @@ alias ipb='ip -brief addr'
 # Afficher les ports TCP/UDP en écoute et les processus associés si autorisé.
 alias ports='ss -tulpn'
 
+# ----- T3 Code ---------------------------------------------------
+
+# Afficher uniquement les informations de connexion à T3 Code.
+# Masquer les avertissements Git et les autres logs.
+function t3 {
+    command t3 "$@" 2>&1 | grep --line-buffered -Ei \
+        'localhost|127\.0\.0\.1|connection string|token|T3 Code server is ready'
+}
 
 # ----- APT -------------------------------------------------------
 
