@@ -397,7 +397,7 @@ alias ports='ss -tulpn'
 
 # Afficher uniquement les informations de connexion à T3 Code.
 # Masquer les avertissements Git et les autres logs.
-function t3 {
+function t33 {
     command t3 "$@" 2>&1 | grep --line-buffered -Ei \
         'localhost|127\.0\.0\.1|connection string|token|T3 Code server is ready'
 }
