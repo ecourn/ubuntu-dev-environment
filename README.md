@@ -36,7 +36,7 @@ Dans la session `ubuntu` que vous venez de tester :
 git clone https://github.com/ecourn/ubuntu-dev-environment.git ~/.ubuntu-dev-environment
 cd ~/.ubuntu-dev-environment
 sudo env SSH_CONNECTION="${SSH_CONNECTION:-}" \
-  bash ./02-configuration-serveur/configuration-serveur.sh --user ubuntu
+  bash ./02-configuration-serveur/configuration-serveur.sh --user ubuntu --port 54321
 ```
 
 Le script affiche le port SSH choisi. Si votre hébergeur a un pare-feu réseau, autorisez ce port **avant de confirmer** et gardez l’ancien ouvert. Lorsque le script le demande, testez depuis votre PC une deuxième connexion PuTTY sur ce port ; tapez `oui` uniquement si elle fonctionne.
