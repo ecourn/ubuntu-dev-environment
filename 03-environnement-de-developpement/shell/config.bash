@@ -467,6 +467,10 @@ alias gsw='git switch'
 # Créer une nouvelle branche et basculer dessus.
 alias gnew='git switch -c'
 
+# Annuler toutes les modifications locales et supprimer les fichiers non suivis.
+# Attention : opération destructive, les fichiers ignorés restent préservés.
+alias gclean='git reset --hard HEAD && git clean -fd'
+
 # Créer une nouvelle branche avec git checkout et basculer dessus.
 # Utilisation : gcb <branche>
 function gcb {
