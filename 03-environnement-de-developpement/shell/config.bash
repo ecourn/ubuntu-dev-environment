@@ -202,6 +202,18 @@ alias perms='stat -c "%A %a %U:%G %n"'
 
 # ----- Recherche de fichiers / texte -----------------------------
 
+# Rechercher récursivement des fichiers par nom ou motif avec ripgrep.
+# Respecte les exclusions définies dans .gitignore.
+# Utilisation : rgf <fichier-ou-motif>
+function rgf {
+    if [ "$#" -ne 1 ]; then
+        printf 'Usage: rgf <file-pattern>\n' >&2
+        return 2
+    fi
+
+    rg --files -g "**/$1"
+}
+
 # Afficher les 20 fichiers de code contenant le plus de lignes.
 alias toplinecode="find . -type f \( -name '*.ts' -o -name '*.tsx' -o -name '*.js' -o -name '*.jsx' -o -name '*.py' -o -name '*.go' -o -name '*.rs' -o -name '*.sh' \) \
   -not -path '*/node_modules/*' \
