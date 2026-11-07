@@ -202,16 +202,29 @@ alias perms='stat -c "%A %a %U:%G %n"'
 
 # ----- Recherche de fichiers / texte -----------------------------
 
-# Rechercher récursivement des fichiers par nom ou motif avec ripgrep.
-# Respecte les exclusions définies dans .gitignore.
-# Utilisation : rgf <fichier-ou-motif>
+# Rechercher récursivement des fichiers, y compris dans les dossiers cachés.
+# Respecte .gitignore par défaut ; -u permet d'inclure les fichiers ignorés.
+# -i ignore la casse du motif (contrairement au -i de rg, utiliser --iglob).
+# Toujours citer le motif pour empêcher son expansion par Bash.
+# Utilisation : rgf [-i] [-u|--no-ignore] [--] '<fichier-ou-motif>'
 function rgf {
+    local glob_option=--glob
+    local -a options=(--hidden)
+    while [ "$#" -gt 0 ]; do
+        case "$1" in
+            -i|--ignore-case) glob_option=--iglob; shift ;;
+            -u|--no-ignore) options+=(--no-ignore); shift ;;
+            --) shift; break ;;
+            -*) printf 'Unknown option: %s\n' "$1" >&2; return 2 ;;
+            *) break ;;
+        esac
+    done
     if [ "$#" -ne 1 ]; then
-        printf 'Usage: rgf <file-pattern>\n' >&2
+        printf "Usage: rgf [-i] [-u|--no-ignore] [--] '<file-pattern>'\n" >&2
         return 2
     fi
 
-    rg --files -g "**/$1"
+    command rg --files "${options[@]}" "$glob_option" "**/$1" --glob '!.git' -- .
 }
 
 # Afficher les 20 fichiers de code contenant le plus de lignes.
