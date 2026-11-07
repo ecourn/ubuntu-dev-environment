@@ -204,11 +204,11 @@ alias perms='stat -c "%A %a %U:%G %n"'
 
 # Rechercher récursivement des fichiers, y compris dans les dossiers cachés.
 # Respecte .gitignore par défaut ; -u permet d'inclure les fichiers ignorés.
-# -i ignore la casse du motif (contrairement au -i de rg, utiliser --iglob).
+# Ignore la casse du motif par défaut ; -i reste accepté pour compatibilité.
 # Toujours citer le motif pour empêcher son expansion par Bash.
 # Utilisation : rgf [-i] [-u|--no-ignore] [--] '<fichier-ou-motif>'
 function rgf {
-    local glob_option=--glob
+    local glob_option=--iglob
     local -a options=(--hidden)
     while [ "$#" -gt 0 ]; do
         case "$1" in
