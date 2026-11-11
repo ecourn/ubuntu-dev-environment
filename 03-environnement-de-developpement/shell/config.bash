@@ -427,6 +427,53 @@ function t33 {
         'localhost|127\.0\.0\.1|connection string|token|T3 Code server is ready'
 }
 
+# ----- Hermes Agent -----------------------------------------------
+
+# Afficher les adresses e-mail présentes dans les identifiants OAuth Hermes.
+# Utilisation : hermes-email
+function hermes-email {
+    python3 - <<'PYCODE'
+import base64
+import json
+from pathlib import Path
+
+path = Path.home() / ".hermes/auth.json"
+try:
+    data = json.loads(path.read_text())
+except (OSError, ValueError) as exc:
+    raise SystemExit(f"Impossible de lire {path}: {exc}")
+
+emails = set()
+
+def find_email(obj):
+    if isinstance(obj, dict):
+        for key, value in obj.items():
+            if key.lower() in ("email", "email_address") and isinstance(value, str):
+                if "@" in value:
+                    emails.add(value)
+            elif key in ("id_token", "access_token", "token") and isinstance(value, str):
+                parts = value.split(".")
+                if len(parts) == 3:
+                    try:
+                        payload = parts[1] + "=" * (-len(parts[1]) % 4)
+                        find_email(json.loads(base64.urlsafe_b64decode(payload)))
+                    except (ValueError, UnicodeError):
+                        pass
+            elif isinstance(value, (dict, list)):
+                find_email(value)
+    elif isinstance(obj, list):
+        for item in obj:
+            find_email(item)
+
+find_email(data)
+for email in sorted(emails):
+    print(email)
+if not emails:
+    print("Aucun e-mail trouvé.")
+PYCODE
+}
+
+
 # ----- APT -------------------------------------------------------
 
 # Actualiser les index des paquets.
